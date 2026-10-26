@@ -1,0 +1,43 @@
+# 설정값은 여기서만 관리한다 (코드에 하드코딩 금지). 민감값/주소 오버라이드는 .env
+base_dir: 'D:\capstone\project_ai_feedback\promo_draft'
+
+comfyui:
+  url: 'http://127.0.0.1:8188'          # .env의 COMFYUI_URL이 있으면 그 값 우선
+  comfyui_dir: 'D:\capstone\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI'
+  input_dir: 'D:\capstone\Comfy-Desktop\ComfyUI-Shared\input'
+  output_dir: 'D:\capstone\Comfy-Desktop\ComfyUI-Shared\output'
+  timeout_sec: 1800                     # 장면 1개 최대 대기 시간
+  free_after_shot: true                 # 장면 종료마다 /free 호출
+
+ffmpeg:
+  path: 'D:\capstone\tools\ffmpeg\ffmpeg-9.0.2-essentials_build\bin\ffmpeg.exe'
+
+paths:
+  workflows: 'workflows'
+  outputs: 'outputs'
+  assets: 'assets'
+
+size_multiple: 64   # 너비·높이 보정 단위 (LTX-2.5는 절반 해상도로 생성 후 x2 업스케일하므로 64)
+
+defaults:
+  workflow: ltx25_i2v
+  width: 1024
+  height: 576
+  frames: 121
+  fps: 24
+  seed: 42
+  negative_prompt: 'worst quality, blurry, distorted, watermark, text, jitter'
+
+# --test 모드 (3단계 저해상도 시험 생성)
+test_mode:
+  width: 512
+  height: 320
+  frames: 49
+
+# 러프컷 출력 규격
+rough_cut:
+  fps: 24
+  width: 1920
+  height: 1080
+  label_font: 'C:/Windows/Fonts/malgun.ttf'
+  label_size: 28

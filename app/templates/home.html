@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}새 영상{% endblock %}
+{% block content %}
+<section class="hero" aria-labelledby="hero-title">
+  <h1 class="hero-title" id="hero-title">어떤 영상을 만들고 싶나요?</h1>
+  <p class="hero-sub">설명만 적으면 장면별로 영상을 만들고, 시청자 의견을 모아 다음 버전을 다듬습니다.</p>
+
+  <form class="ask" id="ask-form" method="get" action="{{ url_for('session.create') }}">
+    <label class="visually-hidden" for="ask-idea">만들고 싶은 영상</label>
+    <textarea class="ask-input" id="ask-idea" name="idea" rows="3" maxlength="2000" required
+              placeholder="예: 우리 학과의 실습실과 학생들의 프로젝트를 보여 주는 30초 홍보 영상"></textarea>
+    <div class="ask-bar">
+      <div class="ask-tools">
+        <div class="dropdown">
+          <button class="ask-tool" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="파일로 시작하기">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+          <ul class="dropdown-menu ask-menu">
+            <li><a class="dropdown-item" href="{{ url_for('session.create', attach='xlsx') }}">
+              <strong>콘티 엑셀로 시작</strong><small>장면·길이·내레이션이 담긴 .xlsx</small></a></li>
+            <li><a class="dropdown-item" href="{{ url_for('session.import_page') }}">
+              <strong>완성 영상 불러오기</strong><small>이미 만든 영상을 장면으로 나눠 다듬기</small></a></li>
+          </ul>
+        </div>
+        <div class="ask-ratio" role="radiogroup" aria-label="화면 비율">
+          {% for value, label in [('9:16', '세로'), ('16:9', '가로'), ('1:1', '정사각')] %}
+          <label class="ratio-pill">
+            <input type="radio" name="aspect" value="{{ value }}" {{ 'checked' if loop.first }}>
+            <span><i class="ratio-ico ratio-{{ value|replace(':', '-') }}" aria-hidden="true"></i>{{ label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <button class="ask-send" type="submit" aria-label="다음: 세부사항 정하기">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M4 10h11M11 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </form>
+  <p class="ask-hint">Enter로 다음 단계 · Shift+Enter로 줄바꿈</p>
+
+  <div class="ask-examples" aria-label="예시">
+    {% for label, text in examples %}
+    <button type="button" class="example-chip" data-text="{{ text }}">{{ label }}</button>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="flow-strip" aria-label="진행 순서">
+  <div class="flow-item"><span class="flow-num">1</span><div><strong>기획</strong><small>설명을 적고 제목·장면·내레이션 정하기</small></div></div>
+  <div class="flow-item"><span class="flow-num">2</span><div><strong>제작</strong><small>장면별 이미지 → 컷 영상</small></div></div>
+  <div class="flow-item"><span class="flow-num">3</span><div><strong>확인 · 공개</strong><small>러프컷·내레이션·배경음악 확인 후 YouTube에</small></div></div>
+  <div class="flow-item"><span class="flow-num">4</span><div><strong>의견</strong><small>댓글을 모아 다음 버전에 반영</small></div></div>
+</section>
+
+{% if recent %}
+<section class="recent" aria-labelledby="recent-title">
+  <div class="recent-head">
+    <h2 class="section-title" id="recent-title">최근 프로젝트</h2>
+    <a class="recent-all" href="{{ url_for('session.index') }}">전체 보기{% if total > recent|length %} ({{ total }}){% endif %} →</a>
+  </div>
+  <ul class="recent-grid">
+    {% for s in recent %}
+    {% set r = s.current_round %}
+    {% set video_round = r if r.video_path else (s.rounds|selectattr('video_path')|list|last) %}
+    <li><a class="recent-card" href="{{ url_for('session.detail', session_id=s.id) }}">
+      <span class="recent-thumb">
+        {% if video_round %}
+        <video src="{{ url_for('session.video', round_id=video_round.id) }}#t=1" preload="metadata" muted playsinline tabindex="-1"></video>
+        {% else %}
+        <span class="thumb-ratio">{{ s.aspect_ratio or '9:16' }}</span>
+        {% endif %}
+      </span>
+      <span class="recent-body">
+        <span class="recent-title">{{ s.title }}</span>
+        <span class="recent-meta">{{ s.genre or '영상' }} · {{ r.round_number }}차</span>
+        {{ ui.status_chip(r.status) }}
+      </span>
+    </a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<script>
+(function () {
+  var form = document.getElementById('ask-form'), box = document.getElementById('ask-idea');
+  function grow() { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 320) + 'px'; }
+  box.addEventListener('input', grow);
+  box.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {  // 한글 조합 중 Enter는 무시
+      e.preventDefault();
+      if (box.value.trim()) form.requestSubmit(); else box.focus();
+    }
+  });
+  document.querySelectorAll('.example-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () { box.value = chip.dataset.text; grow(); box.focus(); });
+  });
+  box.focus();
+})();
+</script>
+{% endblock %}

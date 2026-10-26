@@ -1,0 +1,11 @@
+# 러프컷 전용: dept-intro-30s에서 선택한 버전을 순서대로 이어 붙인다. (생성 없음, --rough-cut만 사용)
+project: dept-intro-30s
+defaults: {workflow: ltx25_t2v, width: 1280, height: 704, frames: 97, fps: 24, seed: 1, negative_prompt: ""}
+shots:
+  - {id: n01, selected: v1, prompt: "-"}   # 초록 PCB, LED 차례로 점등
+  - {id: n03, selected: v2, prompt: "-"}   # 탑다운 PCB, 노란 LED 점멸
+  - {id: n04, selected: v2, prompt: "-"}   # 카메라 달린 보드, LED 빨강→초록
+  - {id: t03, selected: v2, prompt: "-"}   # 자율주행 모형차
+  - {id: r02, selected: v1, prompt: "-"}   # 로봇팔 스윙
+  - {id: r01, selected: v1, prompt: "-"}   # 큐브 집어 옮기기
+  - {id: r05, selected: v1, prompt: "-"}   # 큐브 쌓기

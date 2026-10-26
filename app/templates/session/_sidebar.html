@@ -1,0 +1,49 @@
+{# 프로젝트 왼쪽 사이드 탭: 버전(N차) 고르기 + 이 버전의 기능 탭 + 프로젝트 전체 화면.
+   넘겨받는 값: session, page('detail'|'review'|'versions'|'report'), view_round(상세 화면에서 보고 있는 버전),
+   상세 화면이면 side_tabs = [(key, 이름, 표시, 표시 class)] — 단계 탭(기획·제작·확인·공개·의견)은 모든 버전이 같다.
+   탭 전환은 detail.html 스크립트가 #key 해시로 한다. 다른 화면에서는 상세 화면의 그 탭으로 가는 링크. #}
+{% set ui_status = ui.STATUS %}
+{% set shown = view_round or session.current_round %}
+{% set detail_url = url_for('session.detail', session_id=session.id, round=shown.round_number) %}
+<nav class="side-nav" aria-label="프로젝트 메뉴">
+  <div class="side-group">
+    <p class="side-label">버전</p>
+    <ul class="side-list">
+      {% for r in session.rounds %}
+      {% set st = ui_status.get(r.status, (r.status, 'idle', '')) %}
+      {% set here = page == 'detail' and view_round and r.id == view_round.id %}
+      <li><a class="side-link {{ 'is-active' if here }}" {{ 'aria-current=page' if here }}
+             href="{{ url_for('session.detail', session_id=session.id, round=r.round_number) }}">
+        <span class="side-text">{{ r.round_number }}차{% if loop.last %} <small>최신</small>{% endif %}</span>
+        <span class="side-state chip-{{ st[1] }}" title="{{ st[0] }}"><span class="chip-dot"></span>{{ st[0] }}</span>
+      </a></li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="side-group">
+    <p class="side-label">{{ shown.round_number }}차 단계</p>
+    <ol class="side-list side-stages">
+      {% for key, label, mark, cls in (side_tabs or [('plan', '기획', '', ''), ('produce', '제작', '', ''), ('confirm', '확인', '', ''),
+                                                     ('publish', '공개', '', ''), ('feedback', '의견', '', '')]) %}
+      <li><a class="side-link side-tab" data-tab="{{ key }}"
+             href="{{ ('#' ~ key) if page == 'detail' else (detail_url ~ '#' ~ key) }}">
+        <span class="side-text"><span class="side-step">{{ loop.index }}</span>{{ label }}</span>{% if mark %}<span class="side-count {{ cls }}">{{ mark }}</span>{% endif %}
+      </a></li>
+      {% endfor %}
+    </ol>
+  </div>
+
+  <div class="side-group">
+    <p class="side-label">프로젝트</p>
+    <ul class="side-list">
+      {% set reviewing = session.current_round.status == 'pending_review' %}
+      <li><a class="side-link {{ 'is-active' if page == 'review' }}" href="{{ url_for('session.review', session_id=session.id) }}">
+        <span class="side-text">의견 검토</span>{% if reviewing %}<span class="side-count is-wait">대기</span>{% endif %}</a></li>
+      <li><a class="side-link {{ 'is-active' if page == 'versions' }}" href="{{ url_for('session.versions', session_id=session.id) }}">
+        <span class="side-text">프롬프트 버전 기록</span></a></li>
+      <li><a class="side-link {{ 'is-active' if page == 'report' }}" href="{{ url_for('session.report', session_id=session.id) }}">
+        <span class="side-text">개선 리포트</span></a></li>
+    </ul>
+  </div>
+</nav>

@@ -1,0 +1,74 @@
+# 노드 ID는 ltx23_t2v.json(Export API)에서 확인한 값. 서브그래프가 펼쳐져 ID가 "267:NNN" 형태다.
+ltx23_t2v:
+  prompt:   {node: "267:266", input: value}            # PrimitiveStringMultiline "Prompt"
+  negative: {node: "267:247", input: text}             # CLIPTextEncode (부정)
+  seed:     {node: "267:237", input: noise_seed}       # RandomNoise, 1단계(저해상도) 샘플러  ← 확인 필요
+  width:    {node: "267:257", input: value}            # PrimitiveInt "Width" (최종 해상도, 내부는 1/2로 생성 후 x2 업스케일)
+  height:   {node: "267:258", input: value}            # PrimitiveInt "Height"
+  frames:   {node: "267:277", input: expression, cast: str}  # 'a * b + 1' 수식을 프레임 수 상수로 대체
+  fps:      {node: "267:260", input: value}            # PrimitiveInt "Frame Rate"
+  fixed:                                               # 초안 재현성을 위해 LLM 프롬프트 자동 보강 끔
+    - {node: "267:330", input: value, value: false}    # PrimitiveBoolean "Enable Prompt Enhance"
+
+ltx23_i2v:
+  prompt:   {node: "320:319", input: value}            # PrimitiveStringMultiline "Prompt"
+  negative: {node: "320:313", input: text}
+  seed:     {node: "320:277", input: noise_seed}       # 1단계 샘플러(시그마 1.0→0)의 RandomNoise
+  width:    {node: "320:312", input: value}
+  height:   {node: "320:299", input: value}
+  frames:   {node: "320:323", input: expression, cast: str}   # 'a * b + 1' → 프레임 수 상수
+  fps:      {node: "320:300", input: value}
+  image:    {node: "269", input: image}                # LoadImage (첫 프레임)
+  fixed:
+    - {node: "320:328", input: value, value: false}    # 프롬프트 자동 보강 끔
+
+# LTX-2.5 T2V (video_ltx2_5_t2v.json을 복사한 ltx25_t2v.json). 서브그래프 ID "405:NNN".
+# 해상도는 ResolutionSelector(409) 대신 PrimitiveInt 두 개를 직접 지정 (내부에서 a/2로 절반 생성 후 x2 업스케일).
+ltx25_t2v:
+  prompt:   {node: "405:376", input: value}            # PrimitiveStringMultiline
+  negative: {node: "405:373", input: text}             # CLIPTextEncode (부정)
+  seed:     {node: "405:339", input: noise_seed}       # RandomNoise, 1단계(저해상도, 시그마 1.0→0) 샘플러
+  width:    {node: "405:372", input: value}            # PrimitiveInt (최종 해상도, 링크 409:0 을 상수로 대체)
+  height:   {node: "405:360", input: value}            # PrimitiveInt (링크 409:1 을 상수로 대체)
+  frames:   {node: "405:378", input: expression, cast: str}  # 'a * b + 1' → 프레임 수 상수
+  fps:      {node: "405:361", input: value}            # PrimitiveInt
+  fixed:
+    - {node: "405:383", input: value, value: false}    # 프롬프트 자동 보강 끔 (초안 재현성)
+
+# LTX-2.5 I2V (video_ltx2_5_i2v.json을 복사한 ltx25_i2v.json). 서브그래프 ID "398:NNN". 구조는 ltx25_t2v와 동일 + LoadImage.
+ltx25_i2v:
+  prompt:   {node: "398:376", input: value}
+  negative: {node: "398:373", input: text}
+  seed:     {node: "398:339", input: noise_seed}       # 1단계(저해상도, 시그마 1.0→0) 샘플러
+  width:    {node: "398:372", input: value}            # 링크 403:0 을 상수로 대체
+  height:   {node: "398:360", input: value}            # 링크 403:1 을 상수로 대체
+  frames:   {node: "398:378", input: expression, cast: str}
+  fps:      {node: "398:361", input: value}
+  image:    {node: "395", input: image}                # LoadImage (첫 프레임)
+  fixed:
+    - {node: "398:383", input: value, value: false}    # 프롬프트 자동 보강 끔
+
+# Z-Image Turbo T2I (첫 프레임 이미지 생성, COMFYUI_IMAGE_FIRST=true일 때 I2V 앞에서 실행).
+# 예전 promo_ref/workflows(지금은 _archive/promo_ref)의 zimage_t2i.json·매핑을 그대로 가져온 것 (image_z_image_turbo.json 서브그래프 "57:NNN").
+# Turbo는 cfg=1·8스텝이라 부정 프롬프트 텍스트 입력이 없다 (57:33 ConditioningZeroOut이 부정 조건을 만든다).
+zimage_t2i:
+  prompt:  {node: "57:27", input: text}          # CLIPTextEncode (긍정)
+  width:   {node: "57:13", input: width}         # EmptySD3LatentImage
+  height:  {node: "57:13", input: height}
+  seed:    {node: "57:3",  input: seed}          # KSampler
+  fixed:
+    - {node: "57:30", input: clip_name, value: "qwen_3_4b.safetensors"}   # Z-Image Turbo 텍스트 인코더 (템플릿의 Gemma4는 LTX용)
+
+# LTX-2.5 처음·끝 프레임 (ComfyUI 공식 템플릿 video_ltx2_5_flf2v.json을 API 형식으로 옮긴 ltx25_flf2v.json).
+# 컷 확인에서 '이 순간을 끝으로 다시 만들기' — 컷의 첫 프레임을 0번째, 고른 순간의 화면을 마지막(-1) 프레임에 강도 0.7로 고정한다.
+# 업스케일 없이 최종 해상도로 한 번에 만든다 (960x576 5초 ≈ 2분 반, 2026-10-23 시험).
+ltx25_flf2v:
+  prompt:    {node: "20", input: text}                 # CLIPTextEncode (긍정)
+  negative:  {node: "21", input: text}
+  seed:      {node: "29", input: noise_seed}
+  width:     {node: "40", input: value}
+  height:    {node: "41", input: value}
+  frames:    {node: "42", input: expression, cast: str}   # 프레임 수 상수
+  fps:       {node: "43", input: value}
+  image:     {node: "10", input: image}                # LoadImage (첫 프레임)
+  end_image: {node: "11", input: image}                # LoadImage (끝 프레임)

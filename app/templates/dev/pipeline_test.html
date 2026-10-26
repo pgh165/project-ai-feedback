@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}파이프라인 점검{% endblock %}
+{% block content %}
+<div id="devtest"
+     data-simulation="{{ 1 if simulation else 0 }}"
+     data-round-id="{{ round.id if round else '' }}"
+     data-env-url="{{ url_for('devtest.env') }}"
+     data-start-url="{{ url_for('devtest.start') }}"
+     data-cleanup-url="{{ url_for('devtest.cleanup') }}"
+     data-jobs-url="{{ url_for('devtest.job_log') }}"
+     {% if round %}
+     data-step-url="{{ url_for('devtest.step', round_id=round.id) }}"
+     data-targeted-url="{{ url_for('devtest.targeted_feedback', round_id=round.id) }}"
+     data-verify-url="{{ url_for('devtest.verify', round_id=round.id) }}"
+     data-status-url="{{ url_for('session.round_status', round_id=round.id) }}"
+     {% endif %}>
+
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h1 class="h3 mb-1">파이프라인 점검</h1>
+      <div class="text-muted small">
+        로컬 개발용 페이지입니다. <code>{{ '[TEST]' }}</code> 세션만 만들고 지우며,
+        <strong>상용 API는 호출하지 않습니다</strong>(재생성은 ③ 패널에서 사람이 직접 눌러야만 실행됩니다).
+      </div>
+    </div>
+    {% if session %}
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('session.detail', session_id=session.id) }}">일반 화면에서 열기</a>
+    {% endif %}
+  </div>
+
+  <div class="row g-4 mb-4">
+    <div class="col-lg-5">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>① 환경 점검</span>
+          <button class="btn btn-sm btn-outline-secondary" id="env-refresh">다시 점검</button>
+        </div>
+        <ul class="list-group list-group-flush" id="env-list">
+          <li class="list-group-item text-muted">점검 중…</li>
+        </ul>
+        <div class="card-footer small text-muted" id="env-footer"></div>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card h-100">
+        <div class="card-header">② 테스트 실행</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label small mb-1">예시 불러오기 <span class="text-muted">(임베디드 SW 홍보 — 누르면 아래 입력칸이 채워집니다)</span></label>
+            <div class="d-flex flex-wrap gap-2" id="preset-buttons"></div>
+            <div class="form-text" id="preset-hint"></div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small mb-1">콘티 엑셀(.xlsx) 불러오기 <span class="text-muted">(아래 입력칸이 채워집니다)</span></label>
+            <div class="d-flex gap-2">
+              <input class="form-control form-control-sm" type="file" id="storyboard-file" accept=".xlsx"
+                     data-url="{{ url_for('session.import_storyboard') }}">
+              <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" id="storyboard-load">불러오기</button>
+            </div>
+            <div class="form-text" id="storyboard-msg"></div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1">영상 제목 <span class="text-muted">(선택)</span></label>
+            <input class="form-control form-control-sm" id="opt-title" placeholder="비우면 '파이프라인 점검'">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1">만들고 싶은 영상 설명 <span class="text-muted">(비우면 샘플 장면 사용)</span></label>
+            <textarea class="form-control form-control-sm" id="opt-description" rows="3"
+              placeholder="예: 은색 무선 이어폰이 흰 받침대 위에서 천천히 회전하고, 마지막에 케이스가 열리며 불빛이 켜지는 제품 소개 영상"></textarea>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1">장면(샷) 목록 <span class="text-muted">(선택, 한 줄에 한 장면·영어 권장 — 비우면 자동으로 나눔)</span></label>
+            <textarea class="form-control form-control-sm font-monospace" id="opt-shots-text" rows="4"></textarea>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small mb-1">내레이션 <span class="text-muted">(선택, 한 줄 = 한 장면, 한국어 — 설치된 Windows 한국어 음성으로 영상 위에 얹음)</span></label>
+            <textarea class="form-control form-control-sm" id="opt-narration" rows="3"></textarea>
+          </div>
+          <div class="row g-2 mb-2">
+            <div class="col-md-6">
+              <label class="form-label small mb-1">등장 요소 <span class="text-muted">(선택)</span></label>
+              <textarea class="form-control form-control-sm" id="opt-subjects" rows="2"></textarea>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">영상 스타일 <span class="text-muted">(영어, 선택)</span></label>
+              <textarea class="form-control form-control-sm" id="opt-style" rows="2"></textarea>
+            </div>
+          </div>
+          <div class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+              <label class="form-label small mb-1">샘플 장면 수</label>
+              <select class="form-select form-select-sm" id="opt-shots">
+                {% for n in (1, 2, 3, 4) %}<option value="{{ n }}" {{ 'selected' if n == 2 }}>{{ n }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-auto">
+              <label class="form-label small mb-1">장면 길이(초)</label>
+              <select class="form-select form-select-sm" id="opt-seconds">
+                {% for n in (2, 3, 5) %}<option value="{{ n }}" {{ 'selected' if n == 2 }}>{{ n }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-auto">
+              <label class="form-label small mb-1">화면 비율</label>
+              <select class="form-select form-select-sm" id="opt-aspect">
+                <option value="9:16">세로 9:16</option>
+                <option value="16:9">가로 16:9</option>
+                <option value="1:1">정사각 1:1</option>
+              </select>
+            </div>
+            <div class="col-auto">
+              <button class="btn btn-primary" id="btn-start">새 테스트 시작 (영상 생성부터)</button>
+            </div>
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="opt-enhance"
+                   data-url="{{ url_for('devtest.set_prompt_enhance') }}">
+            <label class="form-check-label small" for="opt-enhance">
+              Gemma 프롬프트 강화 사용 <span class="text-muted">(샷 묘사를 영상 모델에 맞게 자동으로 풍부하게 다듬음.
+              서버를 다시 켜면 .env 값으로 돌아갑니다. 결과는 같은 입력이라도 달라질 수 있습니다)</span>
+            </label>
+          </div>
+          <div class="form-text mb-3">
+            장면당 생성에 보통 2~3분 걸립니다 (모델 로딩 포함). 장면 수를 늘릴수록 오래 걸립니다.
+            장면 목록을 비우면 LLM(있을 때)이 설명을 장면으로 나누고, 없으면 설명 문장이 그대로 장면이 됩니다.
+          </div>
+
+          {% if round %}
+          <hr>
+          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <button class="btn btn-success" id="btn-step" {{ 'disabled' if not simulation }}>다음 단계 실행</button>
+            <span class="small text-muted" id="step-hint">현재 단계에서 사람이 눌러야 할 버튼을 대신 눌러 줍니다.</span>
+          </div>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select class="form-select form-select-sm w-auto" id="opt-target-shot"></select>
+            <button class="btn btn-outline-primary btn-sm" id="btn-targeted">이 장면을 지적하는 댓글 넣기</button>
+            <span class="small text-muted">④ 업로드 후 → 이 댓글만 분류·클러스터링하면 부분 재생성을 확인할 수 있습니다.</span>
+          </div>
+          <div class="mt-2 small" id="action-msg"></div>
+          {% else %}
+          <div class="text-muted small">아직 테스트 세션이 없습니다. '새 테스트 시작'을 누르세요.</div>
+          {% endif %}
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center">
+          <div class="small">
+            {% if test_sessions %}
+            테스트 세션:
+            {% for s in test_sessions %}
+              <a href="{{ url_for('devtest.page', round=s.current_round.id) }}"
+                 class="{{ 'fw-bold' if round and s.id == session.id }}">#{{ s.id }}</a>{{ ', ' if not loop.last }}
+            {% endfor %}
+            {% else %}테스트 세션 없음{% endif %}
+          </div>
+          <button class="btn btn-sm btn-outline-danger" id="btn-cleanup" {{ 'disabled' if not test_sessions }}>
+            테스트 세션 모두 삭제
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if round %}
+  <section id="pipeline-stepper" class="pipeline mb-4"
+           data-status-url="{{ url_for('session.round_status', round_id=round.id) }}"
+           data-api-base="/api/rounds/{{ round.id }}"
+           data-api-root="/api"
+           data-review-url="{{ url_for('session.review', session_id=session.id) }}"
+           data-current="1"
+           data-simulation="{{ 1 if simulation else 0 }}">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <span class="fw-semibold">⚡ {{ session.title }} · {{ round.round_number }}차 — 파이프라인</span>
+      <span class="pipeline-badges d-flex gap-1"></span>
+    </div>
+    <div class="pipeline-steps"></div>
+    <div class="pipeline-panel d-none mt-3"></div>
+  </section>
+
+  <div class="row g-4 mb-4">
+    <div class="col-lg-7">
+      <div class="card h-100">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>③ 자동 판정 — 의도대로 동작했는가</span>
+          <span id="verify-counts" class="small"></span>
+        </div>
+        <ul class="list-group list-group-flush" id="verify-list">
+          <li class="list-group-item text-muted">판정 중…</li>
+        </ul>
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="card mb-4">
+        <div class="card-header">결과 영상 (러프컷)</div>
+        <div class="card-body" id="video-box"><span class="text-muted small">아직 영상이 없습니다.</span></div>
+      </div>
+      <div class="card">
+        <div class="card-header">작업 큐 로그</div>
+        <div class="table-responsive">
+          <table class="table table-sm mb-0 small">
+            <thead><tr><th>#</th><th>종류</th><th>라운드</th><th>상태</th><th>소요</th></tr></thead>
+            <tbody id="job-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/pipeline_stepper.js') }}"></script>
+<script src="{{ url_for('static', filename='js/devtest.js') }}"></script>
+{% endblock %}

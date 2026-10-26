@@ -1,0 +1,11 @@
+# 로컬 영상 생성 (VIDEO_GENERATOR_ADAPTER=local) — NVIDIA GPU 필요
+# 설치: .\venv\Scripts\pip install -r requirements-video.txt
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.14.1+cu130
+diffusers>=0.35
+accelerate>=1.0
+ftfy
+sentencepiece
+protobuf
+imageio
+imageio-ffmpeg

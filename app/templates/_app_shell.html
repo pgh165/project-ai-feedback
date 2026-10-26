@@ -1,0 +1,77 @@
+{# 앱 화면(내 프로젝트·세부사항·완성 영상 불러오기) 공통 틀: 왼쪽 대시보드 + 본문.
+   첫 화면(home.html)은 입력창만 보이도록 대시보드 없이 base.html을 쓴다.
+   프로젝트 안의 화면은 session/_project_base.html (버전·N차 작업 사이드바)을 쓴다.
+   자식 템플릿은 {% block shell %}를 채운다. 좁은 화면에서는 대시보드를 숨기고 상단 메뉴를 쓴다. #}
+{% extends "base.html" %}
+{% set app_shell = True %}
+{% block content %}
+{% set nav = nav_info() %}
+{% set ep = request.endpoint or '' %}
+<div class="app-shell">
+  <aside class="app-side" aria-label="대시보드">
+    <nav class="dash">
+      <a class="dash-new" href="{{ url_for('session.home') }}">
+        <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        새 영상
+      </a>
+      <ul class="dash-list">
+        <li><a class="dash-link {{ 'is-active' if ep == 'session.index' and request.args.get('view') != 'todo' }}" href="{{ url_for('session.index') }}">
+          <span class="dash-ico" aria-hidden="true">▤</span>내 프로젝트<span class="dash-count">{{ nav.total }}</span></a></li>
+        <li><a class="dash-link {{ 'is-active' if ep == 'session.index' and request.args.get('view') == 'todo' }}" href="{{ url_for('session.index', view='todo') }}">
+          <span class="dash-ico" aria-hidden="true">✓</span>할 일{% if nav.todo %}<span class="dash-count is-wait">{{ nav.todo }}</span>{% endif %}</a></li>
+        <li><a class="dash-link {{ 'is-active' if ep.startswith('session.import') }}" href="{{ url_for('session.import_page') }}">
+          <span class="dash-ico" aria-hidden="true">⇪</span>완성 영상 불러오기</a></li>
+      </ul>
+
+      <p class="dash-label">채널</p>
+      <ul class="dash-list">
+        <li><span class="dash-link dash-static">
+          <span class="dash-ico" aria-hidden="true">▶</span>YouTube
+          <span class="dash-state {{ 'is-on' if nav.youtube.connected }}">{{ (nav.youtube.channel or '연결됨') if nav.youtube.connected else ('연결 안 됨' if nav.youtube.configured else '설정 전') }}</span>
+        </span></li>
+      </ul>
+
+      <p class="dash-label">곧 추가</p>
+      <ul class="dash-list dash-soon">
+        {% for ico, label, about in [('◇', '템플릿', '종류별 시작 문장·장면 구성'), ('◎', '브랜드 키트', '로고·색·글꼴·목소리를 모든 프로젝트에'),
+                                     ('▦', '자료함', '올린 로고·이미지·음악·콘티'), ('⚙', '설정', '음성·배경음악·공개 범위 기본값')] %}
+        <li><button type="button" class="dash-link dash-coming" data-about="{{ label }}: {{ about }} — 준비 중입니다.">
+          <span class="dash-ico" aria-hidden="true">{{ ico }}</span>{{ label }}</button></li>
+        {% endfor %}
+      </ul>
+
+      <div class="dash-foot" id="dash-system" data-url="{{ url_for('session.api_system') }}">
+        <span class="dash-dot" id="dash-dot"></span>
+        <span id="dash-system-text">GPU 상태 확인 중…</span>
+      </div>
+    </nav>
+  </aside>
+  <div class="app-body">
+    {% block shell %}{% endblock %}
+  </div>
+</div>
+<div class="toast-lite" id="dash-toast" role="status" hidden></div>
+<script>
+(function () {
+  var toast = document.getElementById('dash-toast'), timer;
+  document.querySelectorAll('.dash-coming').forEach(function (b) {
+    b.addEventListener('click', function () {
+      toast.textContent = b.dataset.about; toast.hidden = false;
+      clearTimeout(timer); timer = setTimeout(function () { toast.hidden = true; }, 3000);
+    });
+  });
+  var box = document.getElementById('dash-system'), dot = document.getElementById('dash-dot'),
+      text = document.getElementById('dash-system-text');
+  async function poll() {
+    try {
+      var st = await (await fetch(box.dataset.url)).json();
+      dot.className = 'dash-dot ' + (st.comfyui ? (st.running ? 'is-busy' : 'is-on') : 'is-off');
+      text.textContent = (st.comfyui ? 'GPU(ComfyUI) 연결됨' : 'GPU(ComfyUI) 꺼짐') +
+        (st.running || st.queued ? ' · 작업 ' + st.running + '개 진행, ' + st.queued + '개 대기' : ' · 대기 작업 없음');
+    } catch (e) { text.textContent = '상태를 읽지 못했습니다'; }
+  }
+  poll();
+  setInterval(poll, 15000);
+})();
+</script>
+{% endblock %}

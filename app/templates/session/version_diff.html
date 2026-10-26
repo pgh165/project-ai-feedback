@@ -1,0 +1,21 @@
+{% extends "session/_project_base.html" %}
+{% set page = "versions" %}
+{% block title %}v{{ version.version_number }} · {{ session.title }}{% endblock %}
+{% block project %}
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.versions', session_id=session.id) }}">버전 기록</a>
+    <h1 class="page-title">v{{ version.version_number }}</h1>
+    {% if version.note %}<p class="page-sub">{{ version.note }}</p>{% endif %}
+  </div>
+</div>
+<section class="doc-section">
+  <h2 class="section-title">바뀐 내용</h2>
+  <p class="section-sub">초록색은 추가된 줄, 빨간색은 지워진 줄입니다.</p>
+  <pre class="diff" data-diff>{{ version.diff_text or '(바뀐 내용 없음)' }}</pre>
+</section>
+<section class="doc-section">
+  <h2 class="section-title">이 버전의 전체 프롬프트</h2>
+  <pre class="prompt prompt-doc">{{ version.content }}</pre>
+</section>
+{% endblock %}

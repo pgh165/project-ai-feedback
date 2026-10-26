@@ -1,0 +1,25 @@
+.env
+venv/
+instance/
+__pycache__/
+*.pyc
+venv_tts/
+venv_tts2/
+_archive/
+
+# large / local-only
+promo_draft/outputs/
+*.mp4
+*.avi
+*.wav
+*.mp3
+.claude/settings.local.json
+*token*.json
+client_secret*.json
+
+# 코드·참고 md만 올림
+promo_draft/assets/
+*.xlsx
+*.jpg
+*.jpeg
+*.png

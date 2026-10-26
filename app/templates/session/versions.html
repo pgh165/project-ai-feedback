@@ -1,0 +1,34 @@
+{% extends "session/_project_base.html" %}
+{% set page = "versions" %}
+{% block title %}버전 기록 · {{ session.title }}{% endblock %}
+{% block project %}
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.detail', session_id=session.id) }}">{{ session.title }}</a>
+    <h1 class="page-title">프롬프트 버전 기록</h1>
+    <p class="page-sub">프롬프트가 바뀔 때마다 기록됩니다. 영상을 만들기 전이라면 예전 버전으로 되돌릴 수 있고, 되돌린 내용도 새 버전으로 남습니다.</p>
+  </div>
+</div>
+<ol class="timeline">
+  {% for v in versions|reverse %}
+  <li class="timeline-item {{ 'is-latest' if loop.first }}">
+    <div class="timeline-mark">v{{ v.version_number }}</div>
+    <div class="timeline-body">
+      <div class="timeline-head">
+        <strong>{{ v.note or '변경' }}</strong>
+        <time class="text-muted small" datetime="{{ v.created_at.isoformat() }}">{{ v.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      </div>
+      {% if v.changes %}<ul class="timeline-changes">{% for ch in v.changes %}<li>{{ ch.description }}</li>{% endfor %}</ul>{% endif %}
+      <div class="timeline-actions">
+        <a class="btn btn-quiet btn-sm" href="{{ url_for('session.version_diff', session_id=session.id, version_id=v.id) }}">바뀐 내용 보기</a>
+        {% if not loop.last %}
+        <form class="d-inline" method="post" action="{{ url_for('session.rollback', session_id=session.id, version_id=v.id) }}">
+          <button class="btn btn-quiet btn-sm text-danger">이 버전으로 되돌리기</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% endblock %}

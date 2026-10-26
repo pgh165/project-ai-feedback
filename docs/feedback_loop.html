@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영상 피드백 루프</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+KR:wght@400;600;700&display=swap">
+<style>
+/* 레이아웃: 위는 파이프라인 루프(편집실 작업 흐름), 아래는 1차·2차 편집 타임라인 — 한 장의 SVG를 단계별로 밝힌다 */
+:root {
+  --bg: #EDF0F4;
+  --surface: #FFFFFF;
+  --ink: #18202D;
+  --muted: #586274;
+  --line: #C6CDD8;
+  --line-strong: #8A95A6;
+  --clip: #A9BCD6;
+  --clip-ink: #1D2B40;
+  --accent: #2856C9;
+  --scene: #C9721C;
+  --scene-soft: #F6DFC5;
+  --edit: #0F8274;
+  --edit-soft: #CDEBE6;
+  --upload: #B8352B;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161D; --surface: #1B212B; --ink: #E7EBF1; --muted: #A0AABA; --line: #343D4B;
+    --line-strong: #6B7688; --clip: #3E5373; --clip-ink: #E4ECF7; --accent: #7FA2FF;
+    --scene: #F0A04E; --scene-soft: #4A3420; --edit: #45C7B4; --edit-soft: #153D38; --upload: #FF7A6E;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161D; --surface: #1B212B; --ink: #E7EBF1; --muted: #A0AABA; --line: #343D4B;
+  --line-strong: #6B7688; --clip: #3E5373; --clip-ink: #E4ECF7; --accent: #7FA2FF;
+  --scene: #F0A04E; --scene-soft: #4A3420; --edit: #45C7B4; --edit-soft: #153D38; --upload: #FF7A6E;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.page { max-width: 1000px; margin: 0 auto; padding-block: 28px 40px; display: grid; gap: 18px; }
+header { display: grid; gap: 4px; }
+h1 { font-size: 1.75rem; line-height: 1.25; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { margin: 0; color: var(--muted); max-width: 62ch; }
+
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.scroll { overflow-x: auto; }
+svg.loop { display: block; width: 100%; min-width: 720px; height: auto; }
+
+/* SVG 공통 */
+.t { font-family: var(--font-body); fill: var(--ink); }
+.t-sm { font-size: 12px; fill: var(--muted); }
+.t-mono { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.t-node { font-size: 15px; font-weight: 700; }
+.t-clip { font-size: 13px; font-weight: 600; fill: var(--clip-ink); }
+.wire { fill: none; stroke: var(--line-strong); stroke-width: 2; }
+.wire-return { stroke: var(--accent); stroke-dasharray: 6 5; }
+.arrow-head { fill: var(--line-strong); }
+.arrow-head.accent { fill: var(--accent); }
+.node rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; transition: stroke .3s, fill .3s; }
+.node .num { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.node.planned rect { stroke-dasharray: 5 4; stroke: var(--upload); }
+.node.planned .tag-bg { fill: var(--upload); }
+.node .tag-t { font-size: 11px; font-weight: 700; fill: var(--surface); }
+.node.now rect { stroke: var(--accent); stroke-width: 3; }
+.node.planned.now rect { stroke: var(--upload); }
+.dot { fill: var(--accent); }
+
+.ruler line { stroke: var(--line); stroke-width: 1; }
+.ruler line.major { stroke: var(--line-strong); }
+.track-bg { fill: var(--bg); }
+.clip { fill: var(--clip); stroke: var(--surface); stroke-width: 2; }
+.clip.new { fill: var(--scene-soft); stroke: var(--scene); }
+.wave rect { fill: var(--line-strong); }
+.wave.v2 rect { fill: var(--edit); }
+.bubble rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.5; transition: fill .4s, stroke .4s; }
+.bubble line { stroke: var(--line-strong); stroke-width: 1.5; transition: stroke .4s; }
+.bubble circle.pin { fill: var(--line-strong); transition: fill .4s; }
+.typed .bubble.scene rect { fill: var(--scene-soft); stroke: var(--scene); }
+.typed .bubble.scene line { stroke: var(--scene); }
+.typed .bubble.scene circle.pin { fill: var(--scene); }
+.typed .bubble.edit rect { fill: var(--edit-soft); stroke: var(--edit); }
+.typed .bubble.edit line { stroke: var(--edit); }
+.typed .bubble.edit circle.pin { fill: var(--edit); }
+.check circle { fill: var(--accent); }
+.check path { fill: none; stroke: var(--surface); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.reuse { stroke: var(--line-strong); stroke-width: 1.5; stroke-dasharray: 4 4; fill: none; }
+.remake { stroke: var(--scene); stroke-width: 2; fill: none; }
+.note-bg.edit { fill: var(--edit-soft); }
+.note-bg.scene { fill: var(--scene-soft); }
+.note-t { font-size: 12px; font-weight: 600; fill: var(--ink); }
+.playhead line { stroke: var(--accent); stroke-width: 2; }
+.playhead path { fill: var(--accent); }
+.playhead { opacity: 0; transition: opacity .3s; }
+.playhead.run { opacity: 1; }
+
+/* 단계 표시: 아직 오지 않은 단계는 흐리게(지우지 않는다) */
+[data-step], .node { transition: opacity .45s ease; }
+.playing [data-step]:not(.lit) { opacity: .2; }
+.playing .node:not(.lit) { opacity: .45; }
+
+/* 설명 패널 */
+.panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 24px; align-items: start; padding: 18px 20px; border-top: 1px solid var(--line); }
+.caption { min-width: 0; display: grid; gap: 4px; }
+.caption .count { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.caption h2 { margin: 0; font-size: 1.15rem; line-height: 1.35; }
+.caption p { margin: 0; max-width: 62ch; }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; }
+button { font: 600 14px/1 var(--font-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+button:hover { border-color: var(--line-strong); }
+button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); min-width: 88px; }
+.steps { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 20px 18px; margin: 0; list-style: none; }
+.steps button { font-size: 13px; padding: 7px 10px; font-weight: 400; color: var(--muted); }
+.steps button[aria-current="step"] { color: var(--ink); font-weight: 700; border-color: var(--accent); }
+.steps .num { font-family: var(--font-mono); font-size: 11px; margin-right: 4px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 8px; }
+.sw { width: 14px; height: 14px; border-radius: 4px; border: 2px solid; flex: none; }
+.sw.scene { background: var(--scene-soft); border-color: var(--scene); }
+.sw.edit { background: var(--edit-soft); border-color: var(--edit); }
+.sw.clip { background: var(--clip); border-color: var(--clip); }
+.sw.planned { background: transparent; border: 2px dashed var(--upload); }
+
+@media (max-width: 640px) {
+  .panel { grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 1.45rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-step], .node, .bubble rect, .bubble line, .playhead { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header>
+    <h1>영상 피드백 루프</h1>
+    <p class="sub">1차 영상을 만들어 공개하고, 시청자 댓글을 모아, 고칠 곳만 고친 2차 영상을 만드는 과정입니다.
+      화면에 대한 의견은 그 장면만 다시 만들고, 소리·편집 의견은 장면을 그대로 둔 채 올릴 영상만 다시 합성합니다.</p>
+  </header>
+
+  <section class="stage" aria-label="피드백 루프 애니메이션">
+    <div class="scroll">
+      <svg class="loop" id="loop" viewBox="0 0 960 560" role="img"
+           aria-labelledby="loop-title loop-desc">
+        <title id="loop-title">영상 피드백 루프와 1차·2차 편집 타임라인</title>
+        <desc id="loop-desc">위쪽은 설명 입력부터 다음 버전까지 8단계 루프이고, YouTube 업로드는 제작자가 확인한 영상만 올린다.
+          아래쪽은 1차 영상의 장면 3개에 달린 댓글 3개와, 이를 반영한 2차 영상이다. 2번 장면만 다시 만들고 1·3번은 재사용하며, 전환은 디졸브, 배경 소리는 70%로 바뀐다.</desc>
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="arrow-head" d="M0 0 L10 5 L0 10 z"/>
+          </marker>
+          <marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="arrow-head accent" d="M0 0 L10 5 L0 10 z"/>
+          </marker>
+          <linearGradient id="dissolve-a" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" style="stop-color: var(--clip)"/>
+            <stop offset="1" style="stop-color: var(--scene-soft)"/>
+          </linearGradient>
+          <linearGradient id="dissolve-b" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" style="stop-color: var(--scene-soft)"/>
+            <stop offset="1" style="stop-color: var(--clip)"/>
+          </linearGradient>
+        </defs>
+
+        <!-- ── 위: 파이프라인 루프 ── -->
+        <g class="wires">
+          <path class="wire" d="M225 80 H275" marker-end="url(#arr)"/>
+          <path class="wire" d="M465 80 H515" marker-end="url(#arr)"/>
+          <path class="wire" d="M705 80 H755" marker-end="url(#arr)"/>
+          <path class="wire" d="M850 113 V187" marker-end="url(#arr)"/>
+          <path class="wire" d="M755 220 H705" marker-end="url(#arr)"/>
+          <path class="wire" d="M515 220 H465" marker-end="url(#arr)"/>
+          <path class="wire" d="M275 220 H225" marker-end="url(#arr)"/>
+          <path class="wire wire-return" d="M130 187 V150 H370 V115" marker-end="url(#arr-accent)"/>
+          <text class="t t-sm" x="250" y="141" text-anchor="middle" style="fill: var(--accent)">다음 버전은 ② 장면 제작부터</text>
+        </g>
+        <circle class="dot" id="dot" r="7" cx="130" cy="80"/>
+
+        <g id="nodes"></g>
+
+        <!-- ── 아래: 1차·2차 타임라인 ── -->
+        <line x1="20" x2="940" y1="272" y2="272" style="stroke: var(--line)"/>
+        <text class="t t-mono" x="20" y="296">편집 타임라인</text>
+        <g class="ruler" id="ruler"></g>
+
+        <text class="t t-node" x="20" y="370">1차</text>
+        <text class="t t-mono" x="68" y="369">영상</text>
+        <text class="t t-mono" x="68" y="401">소리</text>
+        <text class="t t-node" x="20" y="476">2차</text>
+        <text class="t t-mono" x="68" y="475">영상</text>
+        <text class="t t-mono" x="68" y="507">소리</text>
+
+        <rect class="track-bg" x="120" y="348" width="780" height="40" rx="4"/>
+        <rect class="track-bg" x="120" y="392" width="780" height="14" rx="3"/>
+        <rect class="track-bg" x="120" y="454" width="780" height="40" rx="4"/>
+        <rect class="track-bg" x="120" y="498" width="780" height="14" rx="3"/>
+
+        <!-- 1차 장면 (각 5초, 1초 = 52px) -->
+        <g data-step="1">
+          <rect class="clip" x="120" y="348" width="260" height="40" rx="4"/>
+          <rect class="clip" x="380" y="348" width="260" height="40" rx="4"/>
+          <rect class="clip" x="640" y="348" width="260" height="40" rx="4"/>
+          <text class="t t-clip" x="250" y="373" text-anchor="middle">장면 1</text>
+          <text class="t t-clip" x="510" y="373" text-anchor="middle">장면 2</text>
+          <text class="t t-clip" x="770" y="373" text-anchor="middle">장면 3</text>
+        </g>
+        <g class="wave" id="wave1" data-step="2"></g>
+
+        <!-- 2차로 이어지는 화살표 -->
+        <g data-step="7">
+          <path class="reuse" d="M250 410 V450" marker-end="url(#arr)"/>
+          <path class="reuse" d="M770 410 V450" marker-end="url(#arr)"/>
+          <path class="remake" d="M510 410 Q 500 432 484 450" marker-end="url(#arr)"/>
+          <text class="t t-sm" x="258" y="434">그대로 재사용</text>
+          <text class="t t-sm" x="778" y="434">그대로 재사용</text>
+          <text class="t t-sm" x="520" y="434" style="fill: var(--scene)">새 시드로 다시 만듦</text>
+        </g>
+
+        <!-- 2차: 디졸브 0.5초로 장면이 26px씩 겹친다 -->
+        <g data-step="7">
+          <rect class="clip" x="120" y="454" width="260" height="40" rx="4"/>
+          <rect class="clip" x="588" y="454" width="260" height="40" rx="4"/>
+          <rect class="clip new" x="354" y="454" width="260" height="40" rx="4"/>
+          <rect x="354" y="456" width="26" height="36" fill="url(#dissolve-a)"/>
+          <rect x="588" y="456" width="26" height="36" fill="url(#dissolve-b)"/>
+          <text class="t t-clip" x="237" y="479" text-anchor="middle">장면 1</text>
+          <text class="t t-clip" x="484" y="479" text-anchor="middle">장면 2 · 새로</text>
+          <text class="t t-clip" x="731" y="479" text-anchor="middle">장면 3</text>
+        </g>
+        <g class="wave v2" id="wave2" data-step="7"></g>
+        <g data-step="7">
+          <rect class="note-bg edit" x="318" y="522" width="98" height="24" rx="12"/>
+          <text class="t note-t" x="367" y="539" text-anchor="middle">디졸브 0.5초</text>
+          <path class="reuse" d="M367 522 V496" style="stroke: var(--edit); stroke-dasharray: none"/>
+          <rect class="note-bg edit" x="648" y="522" width="112" height="24" rx="12"/>
+          <text class="t note-t" x="704" y="539" text-anchor="middle">배경 소리 70%</text>
+          <path class="reuse" d="M704 522 V514" style="stroke: var(--edit); stroke-dasharray: none"/>
+          <text class="t t-mono" x="852" y="539" text-anchor="end">길이 14초</text>
+        </g>
+
+        <!-- 댓글: 시각이 적힌 댓글은 그 장면에 붙는다 -->
+        <g id="comments" data-step="4">
+          <g class="bubble edit">
+            <line x1="380" x2="380" y1="322" y2="348"/>
+            <circle class="pin" cx="380" cy="348" r="4"/>
+            <rect x="380" y="302" width="138" height="22" rx="6"/>
+            <text class="t t-sm" x="390" y="317" style="fill: var(--ink)">0:05 전환이 뚝 끊겨요</text>
+          </g>
+          <g class="bubble scene">
+            <line x1="505" x2="505" y1="346" y2="348"/>
+            <circle class="pin" cx="505" cy="348" r="4"/>
+            <rect x="505" y="326" width="160" height="20" rx="6"/>
+            <text class="t t-sm" x="515" y="340" style="fill: var(--ink)">0:07 2번 장면이 어두워요</text>
+          </g>
+          <g class="bubble edit">
+            <line x1="744" x2="744" y1="322" y2="348"/>
+            <circle class="pin" cx="744" cy="348" r="4"/>
+            <rect x="744" y="302" width="138" height="22" rx="6"/>
+            <text class="t t-sm" x="754" y="317" style="fill: var(--ink)">0:12 음악이 너무 커요</text>
+          </g>
+        </g>
+        <g class="check" data-step="6">
+          <g transform="translate(526 313)"><circle r="8"/><path d="M-4 0 L-1 3 L4 -3"/></g>
+          <g transform="translate(673 336)"><circle r="8"/><path d="M-4 0 L-1 3 L4 -3"/></g>
+          <g transform="translate(890 313)"><circle r="8"/><path d="M-4 0 L-1 3 L4 -3"/></g>
+        </g>
+
+        <g class="playhead" id="playhead">
+          <line x1="120" x2="120" y1="302" y2="516"/>
+          <path d="M113 300 H127 L120 309 z"/>
+        </g>
+      </svg>
+    </div>
+
+    <div class="panel">
+      <div class="caption" aria-live="polite">
+        <span class="count" id="count">8 / 8</span>
+        <h2 id="cap-title">다음 버전</h2>
+        <p id="cap-body"></p>
+      </div>
+      <div class="controls">
+        <button type="button" id="prev" aria-label="이전 단계">이전</button>
+        <button type="button" class="primary" id="play">재생</button>
+        <button type="button" id="next" aria-label="다음 단계">다음</button>
+      </div>
+    </div>
+    <ol class="steps" id="steps"></ol>
+  </section>
+
+  <ul class="legend">
+    <li><span class="sw clip"></span>1차에서 만든 장면</li>
+    <li><span class="sw scene"></span>화면 의견 → 그 장면만 다시 만듦</li>
+    <li><span class="sw edit"></span>소리·편집 의견 → 장면은 그대로, 올릴 영상만 다시 합성</li>
+  </ul>
+</div>
+
+<script>
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  var svg = document.getElementById("loop");
+
+  var STEPS = [
+    { title: "만들 영상 설명", sub: "설명·콘티 엑셀·완성 영상", x: 130, y: 80,
+      body: "만들고 싶은 영상을 글로 적거나, 콘티 엑셀이나 이미 만든 영상을 올립니다. 이것이 1차 프롬프트가 됩니다." },
+    { title: "장면 제작", sub: "첫 프레임 → 컷 (LTX-2.5)", x: 370, y: 80,
+      body: "장면마다 첫 프레임 이미지를 먼저 만들어 확인하고, 그 이미지를 움직여 컷 영상을 만듭니다. 모두 내 컴퓨터의 GPU에서 돌아갑니다." },
+    { title: "올릴 영상 합성", sub: "이어 붙이기 · 내레이션 · 편집", x: 610, y: 80,
+      body: "고른 컷을 이어 붙이고 내레이션을 얹어 올릴 영상을 만듭니다. 제작자가 확인해야 다음 단계로 넘어갑니다." },
+    { title: "YouTube 업로드", sub: "확인한 영상을 앱에서 바로", x: 850, y: 80,
+      body: "제작자가 영상을 확인하고 'YouTube에 올리기'를 누르면 앱이 연결된 채널에 바로 올립니다. 공개 범위를 고를 수 있고, AI로 만든 영상이라는 표시가 함께 붙습니다." },
+    { title: "댓글 수집", sub: "YouTube 댓글 · 직접 입력", x: 850, y: 220,
+      body: "시청자 댓글을 모읍니다. '0:07'처럼 시각이 적힌 댓글은 그 시각의 장면에 붙습니다." },
+    { title: "분류·묶기", sub: "6축 분류 → 군집화", x: 610, y: 220,
+      body: "건설적인 의견만 골라 비슷한 것끼리 묶고, 의견마다 반영 위치를 정합니다. 주황은 화면 의견, 청록은 소리·편집 의견입니다." },
+    { title: "제작자 승인", sub: "반영할 의견 고르기", x: 370, y: 220,
+      body: "제작자가 반영할 의견을 고릅니다. 소리·편집 의견은 어떤 편집 설정이 바뀌는지 검토 화면에서 미리 보고 고칠 수 있습니다." },
+    { title: "다음 버전", sub: "프롬프트 · 편집 설정 갱신", x: 130, y: 220,
+      body: "화면 의견이 달린 2번 장면만 새 시드로 다시 만들고 1·3번은 그대로 씁니다. 전환은 디졸브, 배경 소리는 70%로 바꿔 올릴 영상만 다시 합성합니다." }
+  ];
+  var RETURN_PATH = [[130, 220], [130, 150], [370, 150], [370, 80]];
+
+  function el(name, attrs, parent) {
+    var node = document.createElementNS(NS, name);
+    for (var k in attrs) node.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(node);
+    return node;
+  }
+
+  // 단계 상자
+  var nodesG = document.getElementById("nodes");
+  var nodeEls = STEPS.map(function (s, i) {
+    var g = el("g", { "class": "node" + (s.planned ? " planned" : "") }, nodesG);
+    el("rect", { x: s.x - 95, y: s.y - 33, width: 190, height: 66, rx: 10 }, g);
+    el("text", { "class": "num", x: s.x - 81, y: s.y - 12 }, g).textContent = String(i + 1).padStart(2, "0");
+    var t = el("text", { "class": "t t-node", x: s.x - 81, y: s.y + 6 }, g);
+    t.textContent = s.title;
+    el("text", { "class": "t t-sm", x: s.x - 81, y: s.y + 23 }, g).textContent = s.sub;
+    if (s.planned) {
+      el("rect", { "class": "tag-bg", x: s.x + 18, y: s.y - 27, width: 70, height: 19, rx: 9.5 }, g);
+      el("text", { "class": "t tag-t", x: s.x + 53, y: s.y - 13, "text-anchor": "middle" }, g).textContent = "추가 예정";
+    }
+    return g;
+  });
+
+  // 시간 눈금 (0~15초, 1초 = 52px)
+  var ruler = document.getElementById("ruler");
+  for (var s = 0; s <= 15; s++) {
+    var x = 120 + s * 52, major = s % 5 === 0;
+    el("line", { x1: x, x2: x, y1: major ? 280 : 285, y2: 290, "class": major ? "major" : "" }, ruler);
+    if (major) el("text", { "class": "t t-mono", x: x + 4, y: 296 }, ruler).textContent = "0:" + String(s).padStart(2, "0");
+  }
+
+  // 소리 파형 — 같은 씨앗으로 1차·2차가 같은 모양, 2차는 70% 높이
+  function wave(id, y, gain, end) {
+    var g = document.getElementById(id), seed = 7;
+    for (var x = 122; x < end; x += 5) {
+      seed = (seed * 9301 + 49297) % 233280;
+      var h = (3 + (seed / 233280) * 9) * gain;
+      el("rect", { x: x, y: y - h / 2, width: 3, height: h, rx: 1 }, g);
+    }
+  }
+  wave("wave1", 399, 1, 898);
+  wave("wave2", 505, 0.7, 846);
+
+  // 단계 목록
+  var list = document.getElementById("steps");
+  var stepBtns = STEPS.map(function (s, i) {
+    var li = document.createElement("li");
+    var b = document.createElement("button");
+    b.type = "button";
+    b.innerHTML = '<span class="num">' + String(i + 1).padStart(2, "0") + "</span>" + s.title;
+    b.addEventListener("click", function () { stop(); go(i, true); });
+    li.appendChild(b);
+    list.appendChild(li);
+    return b;
+  });
+
+  var dot = document.getElementById("dot");
+  var playhead = document.getElementById("playhead");
+  var playBtn = document.getElementById("play");
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var current = STEPS.length - 1, timer = null, playing = false, anim = null;
+
+  function render() {
+    svg.querySelectorAll("[data-step]").forEach(function (n) {
+      n.classList.toggle("lit", Number(n.dataset.step) <= current);
+    });
+    nodeEls.forEach(function (g, i) {
+      g.classList.toggle("lit", i <= current);
+      g.classList.toggle("now", i === current);
+    });
+    svg.classList.toggle("typed", current >= 5);
+    var s = STEPS[current];
+    document.getElementById("count").textContent = (current + 1) + " / " + STEPS.length;
+    document.getElementById("cap-title").textContent = s.title + (s.planned ? " (추가 예정)" : "");
+    document.getElementById("cap-body").textContent = s.body;
+    stepBtns.forEach(function (b, i) {
+      if (i === current) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
+    });
+  }
+
+  // 점을 꼭짓점 목록을 따라 일정한 속도로 움직인다
+  function moveDot(points, ms, done) {
+    if (anim) cancelAnimationFrame(anim);
+    if (reduce || points.length < 2) {
+      var last = points[points.length - 1];
+      dot.setAttribute("cx", last[0]); dot.setAttribute("cy", last[1]);
+      if (done) done();
+      return;
+    }
+    var lens = [0];
+    for (var i = 1; i < points.length; i++) {
+      lens.push(lens[i - 1] + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+    }
+    var total = lens[lens.length - 1], start = null;
+    function frame(ts) {
+      if (start === null) start = ts;
+      var d = Math.min((ts - start) / ms, 1) * total, k = 1;
+      while (k < lens.length - 1 && lens[k] < d) k++;
+      var f = (d - lens[k - 1]) / ((lens[k] - lens[k - 1]) || 1);
+      dot.setAttribute("cx", points[k - 1][0] + (points[k][0] - points[k - 1][0]) * f);
+      dot.setAttribute("cy", points[k - 1][1] + (points[k][1] - points[k - 1][1]) * f);
+      if (d < total) anim = requestAnimationFrame(frame); else if (done) done();
+    }
+    anim = requestAnimationFrame(frame);
+  }
+
+  function sweep(y1, y2, ms) {
+    if (reduce) return;
+    playhead.style.transition = "none";
+    playhead.style.transform = "translateX(0px)";
+    playhead.querySelector("line").setAttribute("y1", y1);
+    playhead.querySelector("line").setAttribute("y2", y2);
+    playhead.querySelector("path").setAttribute("transform", "translate(0 " + (y1 - 302) + ")");
+    playhead.classList.add("run");
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        playhead.style.transition = "transform " + ms + "ms linear, opacity .3s";
+        playhead.style.transform = "translateX(780px)";
+      });
+    });
+    setTimeout(function () {
+      playhead.classList.remove("run");
+      playhead.style.transition = "none";
+      playhead.style.transform = "translateX(0px)";
+    }, ms + 200);
+  }
+
+  function go(i, jump) {
+    var prev = current;
+    current = i;
+    render();
+    var s = STEPS[i];
+    if (jump || i < prev) moveDot([[s.x, s.y]], 0);
+    else moveDot([[STEPS[prev].x, STEPS[prev].y], [s.x, s.y]], 700);
+    if (i === 2) sweep(342, 410, 2400);
+    if (i === 7) sweep(342, 516, 2400);
+  }
+
+  function schedule() {
+    timer = setTimeout(function () {
+      if (current < STEPS.length - 1) { go(current + 1); schedule(); return; }
+      // 다음 버전 → 장면 제작으로 되돌아가는 길을 보여 준 뒤 처음부터
+      moveDot(RETURN_PATH, 1400, function () {
+        timer = setTimeout(function () { if (playing) { go(0, true); schedule(); } }, 900);
+      });
+    }, current === STEPS.length - 1 ? 3600 : 3200);
+  }
+  function start() {
+    playing = true;
+    svg.classList.add("playing");
+    playBtn.textContent = "일시정지";
+    if (current === STEPS.length - 1) go(0, true);
+    schedule();
+  }
+  function stop() {
+    playing = false;
+    clearTimeout(timer);
+    playBtn.textContent = "재생";
+  }
+
+  playBtn.addEventListener("click", function () { playing ? stop() : start(); });
+  document.getElementById("prev").addEventListener("click", function () {
+    stop(); svg.classList.add("playing"); go((current + STEPS.length - 1) % STEPS.length, true);
+  });
+  document.getElementById("next").addEventListener("click", function () {
+    stop(); svg.classList.add("playing"); go((current + 1) % STEPS.length, current === STEPS.length - 1);
+  });
+
+  // 처음 화면은 전체 그림(마지막 단계)을 다 보여 주고, 잠시 뒤 자동 재생한다 (움직임 줄이기 설정이면 재생하지 않음)
+  render();
+  moveDot([[STEPS[current].x, STEPS[current].y]], 0);
+  if (!reduce) setTimeout(function () { if (!playing && current === STEPS.length - 1) start(); }, 1500);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+# dept_promo_ad_storyboard.xlsx(30초 광고, 12컷, 다크 스튜디오 룩) 변환. 프롬프트=N열, 길이=O열(8n+1 프레임), 시드=P열.
+# 사진 입력 없이 전부 T2V. 부정 프롬프트는 CFG=1이라 비움.
+project: dept-promo-ad30
+defaults:
+  workflow: ltx25_t2v
+  width: 1280
+  height: 704
+  fps: 24
+  seed: 400
+  negative_prompt: ''
+shots:
+- id: a01
+  seed: 401
+  frames: 73
+  prompt: 'Extreme macro shot of a tiny surface-mount LED on a dark circuit board. It slowly glows to life, its light spilling across the tiny components around it. Locked-off camera, 100mm macro lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a02
+  seed: 402
+  frames: 73
+  prompt: 'Extreme macro tracking shot gliding low along copper circuit traces on a dark circuit board while a pulse of cyan light races along the traces ahead of the camera. Smooth fast slider movement, 100mm macro lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a03
+  seed: 403
+  frames: 73
+  prompt: 'Low-angle hero shot of a small four-wheeled robot car with a camera module, standing still on the floor. Its headlights switch on and it rolls slowly straight toward the lens. 35mm lens, camera at floor level. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a04
+  seed: 404
+  frames: 73
+  prompt: 'Top-down overhead shot of the small robot car driving smoothly along a curved lane marked by two thin glowing white lines on the black floor, staying centered between them. The camera tracks overhead. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a05
+  seed: 405
+  frames: 73
+  prompt: 'Extreme close-up of the small camera module on the front of the robot car, its lens reflecting cool blue light as the focus slowly pulls onto it. Slow push-in, 100mm macro lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a06
+  seed: 406
+  frames: 73
+  prompt: 'Medium shot of a white desktop robotic arm with four rigid segments and a two-finger gripper. It rotates smoothly and lowers its gripper toward a small glowing cube. Slow orbit around the arm, 50mm lens, slight slow motion. The arm keeps exactly the same shape throughout. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a07
+  seed: 407
+  frames: 73
+  prompt: 'Extreme close-up of a robotic two-finger gripper closing precisely around a small glowing cube and lifting it. Locked-off camera, 100mm macro lens, slow motion. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a08
+  seed: 408
+  frames: 73
+  prompt: 'Several small sensor modules are arranged in a line on the surface, connected by thin wires. They light up one after another from left to right in a quick chain reaction, each glowing cyan. Slow sideways slider movement, 50mm lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a09
+  seed: 409
+  frames: 73
+  prompt: 'Extreme close-up of a palm-sized single-board computer with a small camera module, resting on the surface. The camera lens catches a reflection of light, and a status LED beside it turns green. Slow push-in, 100mm macro lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a10
+  seed: 410
+  frames: 73
+  prompt: 'Close-up silhouette of two hands typing quickly on a laptop keyboard in the dark, backlit by the cool glow of the laptop screen, the screen itself out of view. Slow slider movement, 50mm lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a11
+  seed: 411
+  frames: 97
+  prompt: 'Wide hero shot of a small autonomous robot car, a white desktop robotic arm and a small circuit board with a camera module arranged together on a glossy platform. The camera slowly orbits around them. 35mm lens. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'
+- id: a12
+  seed: 412
+  frames: 97
+  prompt: 'Abstract background: faint glowing circuit trace patterns slowly drifting and pulsing in deep darkness, with soft floating light particles. Slow drift, very dark and minimal, leaving empty space in the center. Cinematic tech commercial look: dark studio with a glossy black reflective surface, cool blue and cyan rim lighting with subtle warm accents, faint atmospheric haze, shallow depth of field with the subject in crisp sharp focus, high contrast, premium and clean. No text, no logos, no people unless described.'

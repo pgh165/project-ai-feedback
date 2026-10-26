@@ -1,0 +1,771 @@
+{% extends "session/_project_base.html" %}
+{% set page = "detail" %}
+{% set view_round = round %}
+{% set side_tabs = stages %}
+{% import "_ui.html" as ui %}
+{% block title %}{{ session.title }}{% endblock %}
+{% block project %}
+{# 버전마다 같은 다섯 단계 탭: ① 기획(처음 입력한 내용 보기·고치기) ② 제작(이미지 → 컷) ③ 확인(러프컷 + 내레이션 TTS + 배경음악)
+   ④ 공개(YouTube) ⑤ 의견(댓글 → 분류 → 묶기 → 검토). 지난 버전도 같은 탭에서 그때 한 것을 읽기 전용으로 본다. #}
+{% set dev = config.get('DEV_TEST_PAGE', True) %}
+{% set rough_failed = round.status == 'generation_failed' and (round.generation_error or '').startswith('러프컷') %}
+{% set producing = stage == 'produce' or round.status == 'prompt_built' %}
+{% set has_media = scenes and (scenes|selectattr('render')|list or scenes|selectattr('image')|list) %}
+{% set scene_total = scenes|length %}
+{% set clips_done = scenes|selectattr('render')|list|length %}
+{% set images_done = scenes|selectattr('image')|list|length %}
+{% set after_confirm = round.status in ('video_ready', 'uploaded', 'feedback_collected', 'feedback_classified', 'clustering', 'pending_review', 'prompt_updated') %}
+{% set published = round.status in ('uploaded', 'feedback_collected', 'feedback_classified', 'clustering', 'pending_review', 'prompt_updated') %}
+{% set stage_names = {'plan': '기획', 'produce': '제작', 'confirm': '확인', 'publish': '공개', 'feedback': '의견', 'done': '반영 완료'} %}
+
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.index') }}">내 프로젝트</a>
+    <h1 class="page-title">{{ session.title }}</h1>
+    <p class="page-meta">{{ session.genre or '영상' }}<span class="sep"></span>{{ session.aspect_ratio or '9:16' }}<span class="sep"></span>{{ round.round_number }}차 버전</p>
+  </div>
+  <div class="head-tools">
+    <form method="post" action="{{ url_for('session.delete', session_id=session.id) }}" class="d-inline"
+          onsubmit="return confirm('이 프로젝트의 모든 버전·댓글·영상 파일이 삭제됩니다. 되돌릴 수 없습니다. 삭제할까요?');">
+      <button class="btn btn-quiet btn-sm text-danger" type="submit">프로젝트 삭제</button>
+    </form>
+  </div>
+</div>
+
+{# 지금 상태 한 줄 (예전 9단계 판 대신). 진행 중이면 폴링해서 진행률을 고치고, 상태가 바뀌면 새로 고친다. #}
+<section class="round-bar" id="round-bar"
+         data-status-url="{{ url_for('session.round_status', round_id=round.id) }}"
+         data-api-base="/api/rounds/{{ round.id }}" data-api-root="/api"
+         data-current="{{ 1 if is_current else 0 }}" data-state="{{ round.status }}"
+         data-rough="{{ 1 if rough_running else 0 }}" data-dev="{{ 1 if dev else 0 }}">
+  <span class="round-stage">{{ round.round_number }}차 · {{ stage_names[stage] }}</span>
+  {{ ui.status_chip(round.status) }}
+  <span class="round-detail" id="round-detail">
+    {%- if round.status == 'generating' %}{{ round.generation_detail or '만드는 중입니다' }}
+    {%- elif round.status == 'clustering' %}비슷한 의견을 묶는 중입니다
+    {%- elif not is_current %}지난 버전입니다 — 단계 탭에서 그때 한 내용을 볼 수 있습니다
+    {%- else %}{{ ui.next_hint(round.status) }}{% endif -%}
+  </span>
+  <span class="round-progress" id="round-progress" hidden><span></span></span>
+  {% if is_current and round.status == 'generating' %}
+  <button type="button" class="btn btn-outline-danger btn-sm ms-auto" id="round-cancel">생성 중지</button>
+  {% endif %}
+  <span class="round-badges" id="round-badges"></span>
+</section>
+
+{# ═════════════ ① 기획 ═════════════ #}
+<section class="stage-panel" data-panel="plan" aria-labelledby="plan-title">
+  <div class="panel-head">
+    <h2 class="section-title" id="plan-title">① 기획</h2>
+    {{ ui.tip(('처음 입력한 내용입니다.' if round.round_number == 1 else (round.round_number - 1)|string ~ '차 의견을 반영해 다듬은 기획입니다.')
+              ~ ' 장면·스타일은 한국어로 보이고 영상 모델에는 영어로 들어갑니다.') }}
+  </div>
+  {% if plan.editable or plan.producing %}
+  {# 처음 입력하던 기획 화면과 같은 입력 화면 — 제작 중이면 고친 장면만 다시 만든다 #}
+  {% set pf_mode = 'producing' if plan.producing else 'edit' %}
+  {% set pf_action = url_for('session.save_plan', session_id=session.id) %}
+  {% set prefill = plan.prefill %}
+  {% set genres = plan.genres %}
+  {% set open_folds = True %}
+  {% include "session/_plan_form.html" %}
+  {% else %}
+  <dl class="plan-view">
+    <div><dt>영상 제목</dt><dd>{{ plan.title }}</dd></div>
+    <div><dt>영상 종류 · 비율</dt><dd>{{ plan.genre or '—' }} · {{ session.aspect_ratio or '9:16' }}</dd></div>
+    <div class="is-wide"><dt>만들고 싶은 영상</dt><dd>{{ plan.synopsis or '—' }}</dd></div>
+    {% if plan.characters %}<div class="is-wide"><dt>반복해서 나오는 대상</dt><dd>{{ plan.characters }}</dd></div>{% endif %}
+    <div class="is-wide"><dt>장면 목록 {{ plan.shots|length }}개</dt><dd>
+      <ol class="plan-shot-list">
+        {% for l in plan.shots %}<li class="bilingual">{% if l.mark %}<span class="tag">{{ l.mark|trim }}</span> {% endif %}{{ ui.bilingual(l.en, tr, tr_key) }}</li>{% endfor %}
+      </ol></dd></div>
+    {% if plan.subtitles %}<div class="is-wide"><dt>자막 <span class="hint-inline">불러온 .srt · 화면 자막으로만</span></dt><dd><ol class="plan-shot-list">{% for t in plan.subtitles %}<li>{{ t }}</li>{% endfor %}</ol></dd></div>{% endif %}
+    {% if plan.narration %}<div class="is-wide"><dt>내레이션</dt><dd><ol class="plan-shot-list">{% for t in plan.narration %}<li>{{ t }}</li>{% endfor %}</ol></dd></div>{% endif %}
+    <div class="is-wide"><dt>영상 스타일</dt><dd>{{ plan.style_ko or plan.style }}{% if plan.style_ko %} <span class="tr-en" lang="en">{{ plan.style }}</span>{% endif %}</dd></div>
+    {% if round.round_number > 1 %}
+    <div class="is-wide"><dt>시청자 반영 사항</dt><dd class="pre">{{ plan.applied }}</dd></div>
+    <div class="is-wide"><dt>연출 지침</dt><dd class="pre">{{ plan.directions }}</dd></div>
+    {% endif %}
+  </dl>
+  {% if plan.replannable %}
+  <p class="plan-note">
+    <button type="button" class="btn btn-quiet btn-sm phase-btn" data-path="/replan"
+            data-confirm="이 버전에서 만든 이미지·컷을 모두 지우고 기획 단계로 돌아갑니다. 계속할까요?">기획 고치기</button> {{ ui.tip('이 버전에서 만든 이미지·컷을 지우고 기획 단계로 돌아갑니다. 내레이션만 고칠 때는 확인 탭에서 바로 고치세요.') }}</p>
+  {% elif is_current and round.status == 'generating' %}
+  <p class="plan-note">만드는 중에는 고칠 수 없습니다. {{ ui.tip('지금 단계가 끝나거나 생성 중지를 누른 뒤에 고칠 수 있습니다.') }}</p>
+  {% elif is_current and not plan.editable %}
+  <p class="plan-note">이미 만든 버전입니다. {{ ui.tip('고칠 점은 공개 뒤 의견으로 모아 다음 버전 기획에 반영합니다. 내레이션은 확인 탭에서 고칠 수 있습니다.') }}</p>
+  {% endif %}
+  {% endif %}
+  <details class="prompt-raw">
+    <summary>프롬프트 원문 (고급)</summary>
+    <pre class="prompt prompt-doc">{{ round.prompt_text }}</pre>
+    {% if plan.editable %}
+    <form method="post" action="{{ url_for('session.edit_prompt', session_id=session.id) }}">
+      <label class="form-label" for="prompt-text">원문 직접 고치기</label>
+      <textarea class="form-control mono" id="prompt-text" name="prompt_text" rows="14">{{ round.prompt_text }}</textarea>
+      <div class="form-text">대괄호 섹션 제목은 그대로 두세요. {{ ui.tip('[샷 목록]은 "1. …" 형식. 한국어로 적은 장면·스타일은 저장할 때 영어로 바뀝니다.') }}</div>
+      <button class="btn btn-outline-primary btn-sm mt-2">새 버전으로 저장</button>
+    </form>
+    {% endif %}
+  </details>
+</section>
+
+{# ═════════════ ② 제작 ═════════════ #}
+<section class="stage-panel" data-panel="produce" aria-labelledby="produce-title">
+  <div class="panel-head">
+    <h2 class="section-title" id="produce-title">② 제작</h2>
+    {{ ui.tip('기획의 장면마다 첫 프레임 이미지를 만들고, 확인한 뒤 컷 영상으로 움직입니다.') }}
+  </div>
+  {% if is_current and producing %}
+  <section class="stage-card phase-action">
+    <div class="phase-action-head">
+      <span class="phase-title">장면별 이미지 → 컷</span>
+      {% if scene_total %}<span class="phase-count">{% if round.status == 'images_ready' %}첫 프레임 {{ images_done }}/{{ scene_total }}{% else %}컷 {{ clips_done }}/{{ scene_total }}{% endif %}</span>{% endif %}
+    </div>
+    {% if round.status == 'prompt_built' %}
+      <p class="mb-2">기획 탭에서 내용을 확인한 뒤 시작하세요.</p>
+      <form method="post" action="{{ url_for('session.generate', session_id=session.id) }}">
+        <button class="btn btn-primary">장면 만들기 시작</button>
+      </form>
+    {% elif round.status == 'generating' %}
+      <p class="mb-0 text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        {{ round.generation_detail or '장면을 만드는 중입니다.' }}</p>
+    {% elif round.status == 'generation_failed' %}
+      <div class="alert alert-danger mb-2">일부 장면을 만들지 못했습니다. {{ round.generation_error or round.video_job_message }}</div>
+      <form method="post" action="{{ url_for('session.generate', session_id=session.id) }}">
+        <button class="btn btn-primary">실패한 장면 다시 만들기</button>
+      </form>
+    {% elif round.status == 'images_ready' %}
+      <p class="mb-2">장면별 첫 프레임을 확인하세요. 아쉬운 장면은 아래에서 피드백을 적고 다시 뽑을 수 있습니다.
+        모두 괜찮으면 이 이미지들로 컷 영상을 만듭니다.</p>
+      <button type="button" class="btn btn-primary phase-btn" data-path="/images/approve"
+              data-confirm="지금 이미지로 컷 영상을 만듭니다. 장면당 몇 분이 걸립니다. 계속할까요?">컷 영상 만들기</button>
+    {% elif round.status == 'clips_ready' %}
+      <p class="mb-2">장면별 컷을 재생해 확인하세요. 아쉬운 컷은 아래에서 피드백을 적고 그 컷만 다시 만들 수 있습니다.
+        모두 괜찮으면 <strong>③ 확인</strong>으로 넘어가 러프컷·내레이션·배경음악을 만듭니다.</p>
+      <button type="button" class="btn btn-primary phase-btn" data-path="/rough-cut" data-next="confirm"
+              data-confirm="선택된 컷을 이어 붙여 러프컷을 만들고, 내레이션(TTS)과 배경음악을 얹습니다. 배경음악을 처음 만들면 몇 분 걸립니다. 계속할까요?">다음: 확인 단계로 (러프컷·내레이션·배경음악) →</button>
+    {% endif %}
+  </section>
+  {% elif not has_media %}
+  <p class="panel-empty">아직 만든 장면이 없습니다.</p>
+  {% endif %}
+
+  {% if has_media %}
+    {% set viewer_mode = 'images' if round.status == 'images_ready' else ('clips' if producing else 'after') %}
+    {% include "session/_scene_viewer.html" %}
+  {% endif %}
+  <div id="escalate-box"></div>
+</section>
+
+{# ═════════════ ③ 확인 ═════════════ #}
+<section class="stage-panel" data-panel="confirm" aria-labelledby="confirm-title">
+  <div class="panel-head">
+    <h2 class="section-title" id="confirm-title">③ 확인</h2>
+    {{ ui.tip('컷을 이어 붙인 러프컷에 내레이션(TTS)·배경음악·로고·자막을 얹은 올릴 영상입니다.') }}
+  </div>
+  {% if not (after_confirm or rough_running or rough_failed) %}
+  <p class="panel-empty">제작에서 <strong>다음: 확인 단계로</strong>를 누르면 여기서 러프컷을 만듭니다.</p>
+  {% else %}
+  <section class="stage-card">
+    {% if round.video_path and not rough_running %}
+      <div class="stage">
+        <video class="stage-video" controls preload="metadata" {{ ui.ratio_frame(session.aspect_ratio) }} src="{{ url_for('session.video', round_id=round.id) }}"></video>
+      </div>
+    {% else %}
+      <div class="stage stage-empty">
+        <div class="stage-empty-frame" {{ ui.ratio_frame(session.aspect_ratio) }}>
+          <span>{% if rough_running %}러프컷·내레이션·배경음악을 만드는 중입니다{% else %}올릴 영상이 아직 없습니다{% endif %}</span>
+        </div>
+      </div>
+    {% endif %}
+    <div class="stage-foot">
+      <span class="stage-title">{{ round.round_number }}차 올릴 영상</span>
+      {% if dev %}<span class="dev-badge" title="개발용 표시">{{ adapter_name }}</span>{% endif %}
+    </div>
+    {% if edit_lines %}
+    <p class="edit-applied"><strong>편집 반영</strong> (장면은 그대로) — {{ edit_lines|join(' · ') }}
+      {% if round.edit_note %}<span class="text-warning-emphasis">· {{ round.edit_note }}</span>{% endif %}</p>
+    {% elif round.edit_note %}
+    <p class="edit-applied text-warning-emphasis">{{ round.edit_note }}</p>
+    {% endif %}
+    {% if is_current and deco.editable and round.video_path and not rough_running %}
+      {% if deco.timeline %}
+        {% set tl = deco.timeline %}
+        {% include "session/_timeline.html" %}
+      {% else %}
+        <p class="hint-inline px-3">올릴 영상을 한 번 다시 만들면 자막·로고 시간을 끌어서 정하는 타임라인이 여기에 나옵니다.</p>
+      {% endif %}
+    {% endif %}
+    {% if is_current and rough_running %}
+      <div class="stage-action text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        {{ round.generation_detail or '컷을 이어 붙여 올릴 영상을 만드는 중입니다.' }}</div>
+    {% elif is_current and rough_failed %}
+      <div class="stage-action">
+        <div class="alert alert-danger mb-2">올릴 영상을 만들지 못했습니다. {{ round.generation_error }}</div>
+        <form method="post" action="{{ url_for('session.generate', session_id=session.id) }}">
+          <button class="btn btn-primary">올릴 영상 다시 만들기</button>
+        </form>
+      </div>
+    {% endif %}
+  </section>
+
+  {# 소리 확인: 장면별 내레이션 합성 결과 + 배경음악만 따로 듣기 #}
+  <section class="stage-card sound-check" aria-labelledby="sound-check-title">
+    <h3 class="sub-title" id="sound-check-title">소리 확인</h3>
+    {% set nr = narration_report %}
+    {% macro fit_tag(n) -%}
+      {%- if not n %}{% elif not n.applied %}<span class="tag">안 들어감</span>{% elif n.truncated %}<span class="tag tag-warn">끝이 잘림</span>{% elif (n.speedup or 1) > 1.001 %}<span class="tag">{{ '%.2f'|format(n.speedup) }}배</span>{% else %}<span class="tag tag-good">맞음</span>{% endif -%}
+    {%- endmacro %}
+    <p class="small mb-2"><strong>내레이션</strong>{% if nr.detail %} — {{ nr.detail }}{% endif %}
+      {{ ui.tip('문장만 고치면 장면은 그대로 두고 음성만 다시 합성합니다. 빈 칸은 그 장면을 읽지 않습니다.') }}</p>
+    {% if narration_editable and not deco.sound.imported %}
+    <form method="post" action="{{ url_for('session.save_narration', session_id=session.id) }}" class="narr-form">
+      <table class="table table-sm narr-table">
+        <tbody>
+        {% for row in narration_rows %}
+        <tr><th scope="row">{{ row.id }}</th>
+          <td><input class="form-control form-control-sm" name="narr_{{ row.id }}" value="{{ row.text }}" maxlength="200"
+                     placeholder="(읽지 않음)" aria-label="{{ row.id }} 내레이션"></td>
+          <td class="text-nowrap small">{{ fit_tag(row.fit) if row.text }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="edit-plan-actions">
+        {% if round.status == 'video_ready' %}
+        <button class="btn btn-primary btn-sm" name="rebuild" value="1">저장하고 올릴 영상 다시 만들기</button>
+        <button class="btn btn-outline-primary btn-sm">저장만</button>
+        {% else %}
+        <button class="btn btn-outline-primary btn-sm">저장</button>
+        {% endif %}
+      </div>
+    </form>
+    {% elif nr.shots %}
+    <table class="table table-sm narr-table">
+      <tbody>
+      {% for sid, n in nr.shots.items() %}
+      <tr><th scope="row">{{ sid }}</th><td>{{ n.text }}</td><td class="text-nowrap small">{{ fit_tag(n) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="small text-muted mb-2">내레이션 없음</p>
+    {% endif %}
+    {% if deco.music_ready %}
+    <p class="small mb-1"><strong>배경음악</strong> — {{ deco.music.caption }}</p>
+    <audio controls preload="none" src="{{ url_for('session.round_music', round_id=round.id) }}" class="music-player"></audio>
+    {% elif deco.music.enabled %}
+    <p class="small text-muted mb-0"><strong>배경음악</strong> — 러프컷을 만들 때 함께 만듭니다.</p>
+    {% else %}
+    <p class="small text-muted mb-0"><strong>배경음악</strong> — 넣지 않음</p>
+    {% endif %}
+  </section>
+
+  {% if is_current and deco.editable %}
+  <section class="stage-card deco-card" aria-labelledby="deco-title">
+    <div class="deco-head">
+      <h3 class="sub-title" id="deco-title">올릴 영상 꾸미기</h3>
+      {{ ui.tip('장면은 다시 만들지 않고, 올릴 영상 위에 로고와 자막만 얹습니다.') }}
+    </div>
+    {% if deco.summary %}<p class="edit-applied mt-0"><strong>지금 설정</strong> — {{ deco.summary|join(' · ') }}</p>{% endif %}
+    <form class="deco-form" method="post" enctype="multipart/form-data"
+          action="{{ url_for('session.decorate', session_id=session.id) }}">
+      <fieldset>
+        <legend>로고 <span class="text-muted">(이 프로젝트의 모든 버전에 적용)</span></legend>
+        <input type="hidden" name="logo_settings" value="1">
+        {# 미리보기: 실제 합성(overlay.logo_filter)과 같은 비율로 로고를 얹는다. 누르거나 끌면 그 자리로 (직접 지정) #}
+        <input type="hidden" id="logo-x" name="logo_x" value="{{ deco.logo.x }}">
+        <input type="hidden" id="logo-y" name="logo_y" value="{{ deco.logo.y }}">
+        <div class="logo-preview" id="logo-preview" style="aspect-ratio: {{ deco.frame.w }} / {{ deco.frame.h }}; width: min(100%, 30rem, calc(22rem * {{ deco.frame.w }} / {{ deco.frame.h }}))"
+             data-w="{{ deco.frame.w }}" data-h="{{ deco.frame.h }}" data-first="{{ deco.frame.first }}" data-last="{{ deco.frame.last }}"
+             data-vector-url="{{ url_for('session.logo_vector_preview', session_id=session.id) }}"
+             role="img" aria-label="로고 위치 미리보기 — 누르거나 끌어서 로고를 옮깁니다">
+          <img class="logo-preview-bg" id="logo-preview-bg" alt="" draggable="false" {% if deco.frame.first %}src="{{ deco.frame.first }}"{% else %}hidden{% endif %}>
+          <img class="logo-preview-logo" id="logo-preview-logo" alt="" draggable="false" {% if deco.logo_url %}src="{{ deco.logo_url }}"{% else %}hidden{% endif %}>
+          <span class="logo-preview-empty" id="logo-preview-empty" {{ 'hidden' if deco.logo_url }}>로고 파일을 고르면 여기에 보입니다</span>
+        </div>
+        <p class="hint-inline deco-wide mb-1">미리보기를 누르거나 끌어서 로고를 원하는 자리로 옮기세요. 저장 전에는 영상에 넣지 않습니다.</p>
+        <label>로고 이미지 {% if deco.has_logo_file %}바꾸기{% endif %}
+          <input class="form-control form-control-sm" type="file" id="logo-file" name="logo_file" accept=".png,.jpg,.jpeg,.webp,.ai,.pdf"></label>
+        {{ ui.tip('PNG·JPG·WEBP 또는 Illustrator(.ai)·PDF. 벡터 파일은 투명 배경 PNG로 바꿔 씁니다.') }}
+        {% if deco.has_logo_file %}
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="logo-enabled" name="logo_enabled" {{ 'checked' if deco.logo.enabled }}> 로고 넣기</label>
+        {% endif %}
+        <label>위치
+          <select class="form-select form-select-sm" id="logo-position" name="logo_position">
+            {% for key, label in deco.positions.items() %}<option value="{{ key }}" {{ 'selected' if deco.logo.position == key }}>{{ label }}</option>{% endfor %}
+          </select></label>
+        <label>크기 <output id="logo-size-out">{{ (deco.logo.size * 100)|round|int }}%</output>
+          <input class="form-range" type="range" id="logo-size" name="logo_size" min="4" max="40" step="1" value="{{ (deco.logo.size * 100)|round|int }}"></label>
+        <label>불투명도 <output id="logo-opacity-out">{{ (deco.logo.opacity * 100)|round|int }}%</output>
+          <input class="form-range" type="range" id="logo-opacity" name="logo_opacity" min="10" max="100" step="5" value="{{ (deco.logo.opacity * 100)|round|int }}"></label>
+        <label>보이는 때
+          <select class="form-select form-select-sm" id="logo-show" name="logo_show">
+            {% for key, label in deco.shows.items() %}<option value="{{ key }}" {{ 'selected' if deco.logo.show == key }}>{{ label }}</option>{% endfor %}
+          </select></label>
+        {# 보이는 때에 맞는 칸만 보인다 (예전에는 '마지막 장면에서만'일 때도 '처음 몇 초'가 보여 고쳐도 바뀌지 않았다) #}
+        <label id="logo-first-box" {{ 'hidden' if deco.logo.show != 'first' }}>처음 몇 초 <input class="form-control form-control-sm" type="number" id="logo-first" name="logo_first_sec" min="0.5" max="30" step="0.5" value="{{ deco.logo.first_sec }}"></label>
+        <label id="logo-last-box" {{ 'hidden' if deco.logo.show != 'last' }}>끝에서 몇 초 <input class="form-control form-control-sm" type="number" id="logo-last" name="logo_last_sec" min="0.5" max="30" step="0.5"
+               value="{{ deco.logo.last_sec if deco.logo.last_sec else '' }}" placeholder="마지막 장면 내내"></label>
+      </fieldset>
+      <fieldset>
+        <legend>자막 <span class="text-muted">(이 버전)</span></legend>
+        <input type="hidden" name="subtitle_settings" value="1">
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="deco-subtitles" name="subtitles" {{ 'checked' if deco.plan.subtitles }}> 내레이션 문장을 YouTube 자막으로 올리기</label>
+        {{ ui.tip('영상에는 자막을 굽지 않고, 내레이션에 맞춘 자막 파일(.srt)을 만들어 YouTube에 올릴 때 한국어 자막 트랙으로 함께 올립니다. 시간은 위 타임라인에서 고칠 수 있습니다.') }}
+        {% if deco.captions_url %}<a class="small" href="{{ deco.captions_url }}" download>자막 파일(.srt) 받기</a>{% endif %}
+        {% if not deco.has_text %}<p class="hint-inline mb-0">[내레이션]이 없는 영상이라 자막으로 올릴 문장이 없습니다.</p>{% endif %}
+      </fieldset>
+      <div class="edit-plan-actions">
+        {% if deco.can_rebuild %}
+        <button class="btn btn-primary btn-sm" name="rebuild" value="1">저장하고 올릴 영상 다시 만들기</button>
+        <button class="btn btn-outline-primary btn-sm">저장만</button>
+        {% else %}
+        <button class="btn btn-outline-primary btn-sm">저장 (올릴 영상을 만들 때 적용)</button>
+        {% endif %}
+      </div>
+    </form>
+  </section>
+
+  <script>
+  (function () {  // 로고 미리보기 — overlay.logo_filter와 같은 계산 (폭 비율, 가장자리 3.5%, 세로 영상은 위 6%·아래 16%)
+    var box = document.getElementById('logo-preview');
+    if (!box) return;
+    var W = +box.dataset.w, H = +box.dataset.h;
+    var bg = document.getElementById('logo-preview-bg'), logo = document.getElementById('logo-preview-logo'),
+        empty = document.getElementById('logo-preview-empty');
+    var size = document.getElementById('logo-size'), opacity = document.getElementById('logo-opacity'),
+        position = document.getElementById('logo-position'), show = document.getElementById('logo-show'),
+        file = document.getElementById('logo-file'), enabled = document.getElementById('logo-enabled'),
+        lx = document.getElementById('logo-x'), ly = document.getElementById('logo-y');
+    function draw() {
+      var k = box.clientWidth / W, edge = Math.min(W, H) * 0.035;
+      var top = H > W ? H * 0.06 : edge, bottom = H > W ? H * 0.16 : edge, pos = position.value;
+      logo.style.width = (W * size.value / 100 * k) + 'px';
+      logo.style.opacity = opacity.value / 100 * (enabled && !enabled.checked ? 0.25 : 1);
+      if (pos === 'custom') {  // 가운데를 그 자리에, 화면 밖으로는 나가지 않게 (overlay.logo_filter와 같은 계산)
+        var lw = logo.offsetWidth, lh = logo.offsetHeight, bw = box.clientWidth, bh = box.clientHeight;
+        logo.style.left = Math.min(Math.max(bw * lx.value - lw / 2, 0), Math.max(bw - lw, 0)) + 'px';
+        logo.style.top = Math.min(Math.max(bh * ly.value - lh / 2, 0), Math.max(bh - lh, 0)) + 'px';
+        logo.style.right = logo.style.bottom = 'auto';
+      } else {
+        logo.style.left = pos.endsWith('left') ? edge * k + 'px' : 'auto';
+        logo.style.right = pos.endsWith('right') ? edge * k + 'px' : 'auto';
+        logo.style.top = pos.startsWith('top') ? top * k + 'px' : 'auto';
+        logo.style.bottom = pos.startsWith('bottom') ? bottom * k + 'px' : 'auto';
+      }
+      document.getElementById('logo-size-out').textContent = size.value + '%';
+      document.getElementById('logo-opacity-out').textContent = opacity.value + '%';
+      document.getElementById('logo-first-box').hidden = show.value !== 'first';
+      document.getElementById('logo-last-box').hidden = show.value !== 'last';
+      var frame = show.value === 'last' ? box.dataset.last : box.dataset.first;
+      if (frame) { bg.src = frame; bg.hidden = false; }
+    }
+    [size, opacity, position, show, enabled].forEach(function (el) { if (el) el.addEventListener('input', draw); });
+    [position, show, enabled].forEach(function (el) { if (el) el.addEventListener('change', draw); });
+    window.addEventListener('resize', draw);
+    var dragging = false;
+    function moveTo(e) {  // 누른 자리를 로고 가운데로 (화면 비율로 저장)
+      var r = box.getBoundingClientRect();
+      lx.value = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1).toFixed(4);
+      ly.value = Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1).toFixed(4);
+      position.value = 'custom';
+      draw();
+    }
+    box.style.touchAction = 'none';
+    // 바탕이 <img>라 그냥 두면 브라우저가 그림 파일 끌기를 시작해 우리 끌기가 중간에 취소된다(pointercancel) — 막는다
+    box.addEventListener('dragstart', function (e) { e.preventDefault(); });
+    box.addEventListener('pointerdown', function (e) {
+      if (logo.hidden || e.button > 0) return;
+      e.preventDefault();
+      dragging = true; box.setPointerCapture(e.pointerId); logo.style.transition = 'none'; moveTo(e);
+    });
+    box.addEventListener('pointermove', function (e) { if (dragging) moveTo(e); });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) {
+      box.addEventListener(t, function () { dragging = false; logo.style.transition = ''; });
+    });
+    file.addEventListener('change', async function () {  // 저장 전에 고른 파일을 미리 보기
+      var f = file.files[0];
+      if (!f) return;
+      if (/\.(ai|pdf)$/i.test(f.name)) {  // 브라우저는 벡터를 못 그려 서버에서 PNG로 바꿔 받는다 (저장은 안 함)
+        empty.textContent = '벡터 로고를 미리보기용으로 바꾸는 중…'; empty.hidden = false;
+        try {
+          var form = new FormData(); form.append('logo_file', f);
+          var res = await fetch(box.dataset.vectorUrl, {method: 'POST', body: form});
+          if (!res.ok) { empty.textContent = (await res.json()).error || '벡터 로고를 읽지 못했습니다'; logo.hidden = true; return; }
+          logo.src = URL.createObjectURL(await res.blob());
+        } catch (e) { empty.textContent = '벡터 로고를 읽지 못했습니다'; logo.hidden = true; return; }
+      } else {
+        logo.src = URL.createObjectURL(f);
+      }
+      logo.hidden = false; empty.hidden = true;
+      draw();
+    });
+    logo.addEventListener('load', draw);  // 새 파일을 고를 때마다 크기가 정해진 뒤 다시 그린다
+    if (logo.complete) draw();
+    bg.addEventListener('load', draw);
+    draw();
+  })();
+  </script>
+
+  {% set snd = deco.sound %}
+  <section class="stage-card deco-card" aria-labelledby="sound-title">
+    <div class="deco-head">
+      <h3 class="sub-title" id="sound-title">배경음악·음성</h3>
+      {{ ui.tip('소리 = 장면 소리 + 내레이션(TTS) + 배경음악 한 곡. 장면은 다시 만들지 않고 소리만 새로 섞습니다.') }}
+    </div>
+    <p class="edit-applied mt-0"><strong>지금 설정</strong> — {{ snd.summary|join(' · ') }}</p>
+    <form class="deco-form" method="post" action="{{ url_for('session.decorate', session_id=session.id) }}">
+      <fieldset>
+        <legend>내레이션 목소리 <span class="text-muted">(이 프로젝트의 모든 버전)</span></legend>
+        {% if snd.imported %}
+        <p class="hint-inline mb-0">불러온 영상에 이미 소리가 있어서 내레이션을 따로 넣지 않습니다. 불러온 자막은 화면 자막으로만 씁니다.</p>
+        {% elif not snd.has_narration %}
+        <p class="hint-inline mb-0">기획에 내레이션이 없어서 읽을 문장이 없습니다.</p>
+        {% endif %}
+        <input type="hidden" name="voice_settings" value="1">
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="voice-enabled" name="voice_enabled" {{ 'checked' if snd.voice.enabled }}> 내레이션 음성 넣기</label>
+        {% if snd.can_choose %}
+        <label>목소리
+          <select class="form-select form-select-sm" id="voice-speaker" name="voice_speaker">
+            {% for key, item in snd.speakers.items() %}
+            <option value="{{ key }}" {{ 'selected' if snd.speaker == key }}>{{ item[0] }} — {{ item[1] }}</option>
+            {% endfor %}
+          </select></label>
+        <label id="voice-tone-box" {{ 'hidden' if snd.engine != 'qwen' }}>말투 (Qwen만)
+          <select class="form-select form-select-sm" id="voice-tone" name="voice_tone">
+            {% for key, item in snd.tones.items() %}<option value="{{ key }}" {{ 'selected' if snd.voice.tone == key }}>{{ item[0] }}</option>{% endfor %}
+          </select></label>
+        <label class="deco-wide" id="voice-instruct-box" {{ 'hidden' if snd.voice.tone != 'custom' or snd.engine != 'qwen' }}>말투 직접 적기 (영어로 적으면 가장 잘 따릅니다)
+          <input class="form-control form-control-sm" id="voice-instruct" name="voice_instruct" maxlength="300"
+                 value="{{ snd.voice.instruct }}" placeholder="예: Speak slowly and gently, like a documentary narrator."></label>
+        <div class="deco-wide voice-preview">
+          <button type="button" class="btn btn-quiet btn-sm" id="voice-preview-btn">미리 듣기</button>
+          <span class="hint-inline" id="voice-preview-msg"></span>
+          <audio id="voice-preview-audio" controls hidden></audio>
+        </div>
+        {{ ui.tip('Edge 목소리는 인터넷이 필요합니다(계정 불필요). 인터넷이 안 되면 Supertonic(로컬)으로 대신 읽습니다.') }}
+        {% endif %}
+      </fieldset>
+      <fieldset>
+        <legend>장면 소리 <span class="text-muted">(이 버전)</span></legend>
+        <input type="hidden" name="scene_sound_settings" value="1">
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="scene-sound" name="scene_sound" {{ 'checked' if deco.plan.scene_sound }}> 영상 모델이 만든 장면 소리(효과음) 넣기</label>
+        {{ ui.tip('끄면 컷 영상의 소리를 빼고 내레이션·배경음악만 넣습니다. 소리가 없는 영상을 불러온 프로젝트는 처음부터 꺼져 있어, 다시 만든 장면에만 효과음이 생기지 않습니다.') }}
+      </fieldset>
+      <fieldset>
+        <legend>내레이션 크기·빠르기 <span class="text-muted">(이 버전)</span></legend>
+        <input type="hidden" name="narration_settings" value="1">
+        <label>크기(%) <input class="form-control form-control-sm" type="number" id="narr-gain" name="narration_gain" min="30" max="250" step="5" value="{{ (deco.plan.narration_gain * 100)|round|int }}"></label>
+        <label>빠르기(%) <input class="form-control form-control-sm" type="number" id="narr-tempo" name="narration_tempo" min="70" max="140" step="2" value="{{ (deco.plan.narration_tempo * 100)|round|int }}"></label>
+        {{ ui.tip('장면보다 긴 문장은 1.4배까지 빠르게 읽고, 그래도 넘치면 끝이 잘립니다.') }}
+      </fieldset>
+      <fieldset>
+        <legend>배경음악 <span class="text-muted">(영상 전체에 한 곡, 연주곡)</span></legend>
+        <input type="hidden" name="music_settings" value="1">
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="music-enabled" name="music_enabled" {{ 'checked' if deco.music.enabled }}> 배경음악 넣기</label>
+        <label class="deco-wide">곡 분위기 (영어로 적으면 가장 잘 알아듣습니다)
+          <textarea class="form-control form-control-sm" id="music-caption" name="music_caption" rows="2" maxlength="500"
+                    placeholder="{{ deco.music_placeholder }}">{{ deco.music.caption }}</textarea></label>
+        <button class="btn btn-quiet btn-sm" name="music_suggest" value="1">영상에 맞게 제안받기</button>
+        <label>크기(%) <input class="form-control form-control-sm" type="number" id="music-volume" name="music_volume" min="5" max="150" step="5" value="{{ (deco.music.volume * 100)|round|int }}"></label>
+        {% if deco.music_ready %}
+        <label class="form-check"><input class="form-check-input" type="checkbox" id="music-reroll" name="music_reroll"> 다른 곡으로 바꾸기</label>
+        {% endif %}
+        {{ ui.tip('곡은 처음 한 번 만들 때 몇 분 걸리고, 그 뒤에는 같은 곡을 다시 씁니다. 내레이션이 나올 때는 음악이 자동으로 작아집니다.') }}
+      </fieldset>
+      <div class="edit-plan-actions">
+        {% if deco.can_rebuild %}
+        <button class="btn btn-primary btn-sm" name="rebuild" value="1">저장하고 올릴 영상 다시 만들기</button>
+        <button class="btn btn-outline-primary btn-sm">저장만</button>
+        {% else %}
+        <button class="btn btn-outline-primary btn-sm">저장 (올릴 영상을 만들 때 적용)</button>
+        {% endif %}
+      </div>
+    </form>
+  </section>
+  {% if snd.can_choose %}
+  <script>
+  (function () {
+    var speaker = document.getElementById('voice-speaker'), tone = document.getElementById('voice-tone'),
+        toneBox = document.getElementById('voice-tone-box'), box = document.getElementById('voice-instruct-box');
+    function sync() {
+      var qwen = speaker.value.indexOf('qwen:') === 0;
+      toneBox.hidden = !qwen;
+      box.hidden = !qwen || tone.value !== 'custom';
+    }
+    speaker.addEventListener('change', sync);
+    tone.addEventListener('change', sync);
+    var btn = document.getElementById('voice-preview-btn'), msg = document.getElementById('voice-preview-msg'),
+        audio = document.getElementById('voice-preview-audio');
+    btn.addEventListener('click', async function () {
+      btn.disabled = true;
+      msg.textContent = '합성하는 중…';
+      try {
+        var res = await fetch({{ snd.preview_url|tojson }}, {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({speaker: speaker.value, tone: tone.value, instruct: document.getElementById('voice-instruct').value})});
+        var data = await res.json();
+        if (!res.ok) { msg.textContent = data.error || '미리 듣기 실패'; return; }
+        msg.textContent = '"' + data.text + '"';
+        audio.src = data.url;
+        audio.hidden = false;
+        audio.play().catch(function () {});
+      } catch (e) { msg.textContent = '미리 듣기 실패'; }
+      finally { btn.disabled = false; }
+    });
+  })();
+  </script>
+  {% endif %}
+  {% elif deco.summary or deco.sound.summary %}
+  <p class="edit-applied">이 버전의 설정 — {{ (deco.summary + deco.sound.summary)|join(' · ') }}</p>
+  {% endif %}
+
+  {% if is_current and round.status == 'video_ready' %}
+  <div class="next-bar">
+    <span>괜찮으면 공개로 넘어가세요. {{ ui.tip('아쉬운 컷은 제작 탭에서 그 컷만 다시 만들 수 있습니다.') }}</span>
+    <a href="#publish" class="btn btn-primary side-jump" data-tab="publish">다음: 공개 →</a>
+  </div>
+  {% endif %}
+  {% endif %}
+</section>
+
+{# ═════════════ ④ 공개 ═════════════ #}
+<section class="stage-panel" data-panel="publish" aria-labelledby="publish-title">
+  <div class="panel-head">
+    <h2 class="section-title" id="publish-title">④ 공개</h2>
+    {{ ui.tip('확인한 영상을 YouTube에 올려 시청자 의견을 받습니다. 사람이 눌러야만 올라갑니다.') }}
+  </div>
+  {% if published %}
+    <p>{% if yt.video_id and not yt.video_id.startswith('sim-') %}
+      <a href="https://www.youtube.com/watch?v={{ yt.video_id }}" target="_blank" rel="noopener">YouTube에서 영상 보기</a>
+      {% else %}공개됨 (시뮬레이션 {{ yt.video_id }}){% endif %}
+      {% if yt.message %}<span class="hint-inline">· {{ yt.message }}</span>{% endif %}</p>
+    {% if is_current %}<a href="#feedback" class="btn btn-outline-primary btn-sm side-jump" data-tab="feedback">의견 모으기 →</a>{% endif %}
+    {% if is_current and round.status == 'uploaded' and not round.feedbacks %}
+    <form class="mt-2" method="post" action="{{ url_for('session.unpublish', session_id=session.id) }}"
+          onsubmit="return confirm('③ 확인 단계로 되돌립니다. 장면은 그대로 두고 올릴 영상을 고쳐 다시 만든 뒤 다시 올릴 수 있습니다. YouTube에 올린 예전 영상은 지우지 않습니다. 계속할까요?');">
+      <button class="btn btn-quiet btn-sm">확인 단계로 되돌리기 (다시 만들어 올리기)</button>
+      {{ ui.tip('댓글을 모으기 전에만 됩니다. 장면(이미지·컷)은 다시 만들지 않습니다.') }}
+    </form>
+    {% endif %}
+  {% elif is_current and round.status == 'video_ready' %}
+    {% set manual_form %}
+      {% if deco.captions_url %}<p class="hint-inline mb-1">직접 올릴 때는 <a href="{{ deco.captions_url }}" download>자막 파일(.srt)</a>도 YouTube Studio의 자막 메뉴에서 올리세요.</p>{% endif %}
+      <form method="post" action="{{ url_for('session.upload', session_id=session.id) }}">
+        <label class="form-label" for="video-id">유튜브에 직접 올린 영상의 ID</label>
+        <input class="form-control mb-2" id="video-id" name="video_id" placeholder="예: dQw4w9WgXcQ" required>
+        <button class="btn btn-outline-primary btn-sm">영상 연결하기</button>
+      </form>
+    {% endset %}
+    {% if simulation %}
+      <form method="post" action="{{ url_for('session.upload', session_id=session.id) }}">
+        <button class="btn btn-primary">공개하기 (시뮬레이션)</button>
+      </form>
+    {% elif yt.uploading %}
+      <p class="yt-progress" id="yt-progress" data-status-url="{{ url_for('session.round_status', round_id=round.id) }}">
+        <span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        <span id="yt-message">{{ yt.message or 'YouTube 업로드 대기 중' }}</span></p>
+      <script>
+      (function () {
+        var box = document.getElementById('yt-progress');
+        var timer = setInterval(async function () {
+          try {
+            var st = await (await fetch(box.dataset.statusUrl)).json();
+            if (st.youtube.message) document.getElementById('yt-message').textContent = st.youtube.message;
+            if (!st.youtube.uploading) { clearInterval(timer); location.reload(); }
+          } catch (e) { /* 다음 주기에 다시 */ }
+        }, 2000);
+      })();
+      </script>
+    {% elif yt.connected %}
+      {% if yt.failed %}<div class="alert alert-danger py-2">{{ yt.message }}</div>{% endif %}
+      <form class="yt-form" method="post" action="{{ url_for('session.youtube_upload_start', session_id=session.id) }}">
+        <label class="form-label" for="yt-title">제목</label>
+        <input class="form-control mb-2" id="yt-title" name="title" maxlength="100" value="{{ yt.title }}" required>
+        <details class="mb-2"><summary class="small">설명 고치기</summary>
+          <textarea class="form-control mt-1" id="yt-description" name="description" rows="4" maxlength="5000">{{ yt.description }}</textarea>
+        </details>
+        <label class="form-label" for="yt-privacy">공개 범위</label>
+        <select class="form-select mb-2" id="yt-privacy" name="privacy">
+          {% for key, label in yt.privacy_options.items() %}<option value="{{ key }}" {{ 'selected' if key == yt.privacy }}>{{ label }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-primary">YouTube에 올리기</button>
+        <p class="hint-inline mt-2 mb-0">{{ yt.channel or '연결된' }} 채널 {{ ui.tip('AI로 만든 영상이라는 표시가 함께 붙습니다. Google 감사를 받지 않은 프로젝트로 올리면 YouTube가 비공개로 고정합니다.') }}</p>
+        {% if deco.captions_url %}
+        <p class="hint-inline mt-1 mb-0">한국어 자막(.srt)도 함께 올립니다.
+          {% if not yt.captions %}<strong>자막 권한이 없는 연결이라</strong> 계정을 끊고 다시 연결해야 자막이 올라갑니다 (영상은 그대로 올라감).{% endif %}</p>
+        {% endif %}
+      </form>
+      <form class="mt-2" method="post" action="{{ url_for('session.youtube_disconnect') }}">
+        <input type="hidden" name="next" value="{{ url_for('session.detail', session_id=session.id) }}">
+        <button class="btn btn-quiet btn-sm">YouTube 계정 연결 끊기</button>
+      </form>
+      <details class="mt-2"><summary class="small">이미 직접 올렸다면</summary>{{ manual_form }}</details>
+    {% elif yt.configured %}
+      <a class="btn btn-primary mb-2" href="{{ url_for('session.youtube_connect', next=url_for('session.detail', session_id=session.id)) }}">YouTube 계정 연결</a>
+      <details><summary class="small">직접 올린 영상 연결하기</summary>{{ manual_form }}</details>
+    {% else %}
+      {{ manual_form }}
+      <p class="hint-inline mt-2 mb-0">앱에서 바로 올리기 {{ ui.tip('.env의 YOUTUBE_CLIENT_SECRETS에 Google OAuth 클라이언트 JSON 경로를 적으면 이 화면에서 바로 올릴 수 있습니다.') }}</p>
+    {% endif %}
+  {% else %}
+    <p class="panel-empty">확인 단계에서 올릴 영상을 확인하면 여기서 공개할 수 있습니다.</p>
+  {% endif %}
+</section>
+
+{# ═════════════ ⑤ 의견 ═════════════ #}
+<section class="stage-panel" data-panel="feedback" aria-labelledby="feedback-title">
+  <div class="panel-head">
+    <h2 class="section-title" id="feedback-title">⑤ 의견</h2>
+    {{ ui.tip('댓글을 모아 쓸 만한 의견을 고르고, 비슷한 것끼리 묶어 다음 버전에 반영합니다.') }}
+  </div>
+  {% if not published %}
+    <p class="panel-empty">영상을 공개하면 여기서 댓글을 모읍니다.</p>
+  {% elif is_current %}
+    {% if round.status in ('uploaded', 'feedback_collected') %}
+      <form class="mb-3" method="post" action="{{ url_for('session.collect', session_id=session.id) }}">
+        <button class="btn {{ 'btn-outline-primary' if round.status == 'feedback_collected' else 'btn-primary' }}">{{ '시뮬레이션 댓글 모으기' if simulation else '유튜브 댓글 모으기' }}</button>
+      </form>
+      <form class="mb-3" method="post" action="{{ url_for('session.add_comments', session_id=session.id) }}">
+        <label class="form-label" for="manual-comments">의견 직접 입력 <span class="hint-inline">한 줄에 하나</span></label>
+        <textarea class="form-control mb-2" id="manual-comments" name="comments" rows="3"
+                  placeholder="예: 1분 10초쯤 배경음악이 너무 커요"></textarea>
+        <button class="btn btn-outline-primary btn-sm">의견 추가</button>
+      </form>
+      {% if round.status == 'feedback_collected' %}
+      <form method="post" action="{{ url_for('session.filter_feedback', session_id=session.id) }}">
+        <button class="btn btn-primary">댓글 {{ feedbacks|length }}개 분류하기</button>
+      </form>
+      {% endif %}
+    {% elif round.status == 'feedback_classified' %}
+      <p>쓸 만한 의견을 골라냈습니다. 아래 표에서 판정을 확인하고, 비슷한 의견끼리 묶으세요.</p>
+      <form method="post" action="{{ url_for('session.cluster', session_id=session.id) }}">
+        <button class="btn btn-primary">비슷한 의견 묶기</button>
+      </form>
+    {% elif round.status == 'clustering' %}
+      <p class="text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>비슷한 의견끼리 묶는 중입니다.</p>
+    {% elif round.status == 'pending_review' %}
+      <p>묶인 의견을 보고 다음 버전에 반영할 것을 고르세요.</p>
+      <a class="btn btn-primary" href="{{ url_for('session.review', session_id=session.id) }}">의견 검토하기</a>
+    {% endif %}
+  {% else %}
+    {% set nxt = session.rounds|selectattr('round_number', 'equalto', round.round_number + 1)|first %}
+    <p>이 버전의 의견을 반영해 {% if nxt %}<a href="{{ url_for('session.detail', session_id=session.id, round=nxt.round_number) }}">{{ nxt.round_number }}차 버전</a>{% else %}다음 버전{% endif %}을 만들었습니다.</p>
+  {% endif %}
+
+  {% if feedbacks %}
+  {% set constructive = feedbacks|selectattr('is_constructive')|list %}
+  <section class="feedback-section" aria-labelledby="fb-title">
+    <div class="section-head">
+      <h3 class="sub-title" id="fb-title">시청자 댓글 {{ feedbacks|length }}개</h3>
+      {% if feedbacks|selectattr('is_constructive', 'ne', none)|list %}
+      <p class="section-sub">반영할 만한 의견 {{ constructive|length }}개. 막대가 길수록 구체적이고 중요한 의견입니다.</p>
+      {% endif %}
+    </div>
+    <div class="table-responsive">
+    <table class="table fb-table align-middle">
+      <thead><tr>
+        <th scope="col">댓글</th><th scope="col">판정</th><th scope="col">주제</th>
+        <th scope="col" class="num">구체성</th><th scope="col" class="num">타당성</th><th scope="col" class="num">심각도</th>
+        <th scope="col" class="num">긴급도</th><th scope="col" class="num">품질</th><th scope="col"><span class="visually-hidden">작업</span></th>
+      </tr></thead>
+      <tbody>
+      {% for f in feedbacks %}
+      <tr class="{{ 'is-dim' if f.is_constructive == False }}">
+        <td class="fb-text">{{ f.comment_text }}
+          {% if f.needs_review %}<span class="tag tag-warn">확인 필요</span>{% endif %}</td>
+        <td>{% if f.is_constructive is none %}<span class="text-muted">—</span>{% elif f.is_constructive %}<span class="tag tag-good">반영 후보</span>{% else %}<span class="tag">제외</span>{% endif %}</td>
+        {% if f.is_constructive is none %}
+          <td colspan="7"></td>
+        {% else %}
+          <td class="fb-topics">{% for cat, score in f.topic_categories_multi %}{{ ui.topic(cat) }}{% else %}{{ ui.topic(f.topic_category) }}{% endfor %}</td>
+          <td class="num">{{ ui.meter(f.specificity_score, '구체성') }}</td>
+          <td class="num">{{ ui.meter(f.validity_score, '타당성') }}</td>
+          <td class="num">{{ ui.meter(f.severity_score, '심각도') }}</td>
+          <td class="num">{{ ui.meter(f.urgency_score, '긴급도') }}</td>
+          <td class="num">{{ ui.meter(f.quality_score, '품질') }}</td>
+          <td class="text-end">
+            {% if is_current and round.status == 'feedback_classified' %}
+            <form method="post" action="{{ url_for('session.toggle_feedback', session_id=session.id, feedback_id=f.id) }}">
+              <button class="btn btn-link btn-sm p-0 text-nowrap">판정 바꾸기</button>
+            </form>
+            {% endif %}
+          </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+  {% endif %}
+</section>
+
+<script>
+(function () {  // 번역이 아직 없는 장면 묘사는 백그라운드 번역이 끝나는 대로 채운다
+  var url = {{ tr_url|tojson }};
+  function pendingEls() { return document.querySelectorAll('.tr-ko.is-pending'); }
+  if (!pendingEls().length) return;
+  var tries = 0;
+  async function poll() {
+    tries += 1;
+    var res;
+    try { res = await (await fetch(url)).json(); } catch (e) { res = null; }
+    if (res) {
+      pendingEls().forEach(function (el) {
+        var ko = res.done[el.dataset.tr];
+        if (ko) { el.textContent = ko; el.classList.remove('is-pending'); }
+      });
+      if (!res.pending) {
+        pendingEls().forEach(function (el) { el.classList.remove('is-pending'); el.classList.add('is-none'); });
+        return;
+      }
+    }
+    if (pendingEls().length && tries < 200) setTimeout(poll, 3000);
+  }
+  setTimeout(poll, 1500);
+})();
+
+(function () {  // 단계 탭: #키 해시로 한 단계만 보인다 (스크립트가 없으면 전부 보임). 해시가 없으면 지금 단계
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.side-tab[data-tab]'));
+  var keys = tabs.map(function (t) { return t.dataset.tab; });
+  var fallback = {{ ('confirm' if stage == 'done' else stage)|tojson }};
+  function show(key) {
+    if (keys.indexOf(key) < 0) key = /^scene-/.test(key) ? 'produce' : fallback;
+    document.querySelectorAll('[data-panel]').forEach(function (el) {
+      el.classList.toggle('is-hidden-tab', el.dataset.panel !== key);
+    });
+    tabs.forEach(function (t) {
+      var on = t.dataset.tab === key;
+      t.classList.toggle('is-active', on);
+      if (on) t.setAttribute('aria-current', 'true'); else t.removeAttribute('aria-current');
+    });
+  }
+  function go(key) {
+    try { history.replaceState(null, '', '#' + key); } catch (err) {}
+    show(key);
+    window.scrollTo({top: 0});
+  }
+  tabs.concat(Array.prototype.slice.call(document.querySelectorAll('.side-jump[data-tab]'))).forEach(function (a) {
+    a.addEventListener('click', function (e) { e.preventDefault(); go(a.dataset.tab); });
+  });
+  window.addEventListener('hashchange', function () { show(location.hash.slice(1)); });
+  show(location.hash.slice(1));
+
+  var base = document.getElementById('round-bar').dataset.apiBase;
+  document.querySelectorAll('.phase-btn').forEach(function (btn) {  // 제작 단계 버튼 (이미지 승인·러프컷·다시 계획)
+    btn.addEventListener('click', async function () {
+      if (!confirm(btn.dataset.confirm)) return;
+      btn.disabled = true;
+      var res = await fetch(base + btn.dataset.path, {method: 'POST'});
+      if (!res.ok) { alert((await res.json()).error || '요청 실패'); btn.disabled = false; return; }
+      if (btn.dataset.next) { try { history.replaceState(null, '', '#' + btn.dataset.next); } catch (err) {} }
+      location.reload();
+    });
+  });
+})();
+</script>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/round_view.js') }}"></script>
+{% endblock %}

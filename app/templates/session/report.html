@@ -1,0 +1,90 @@
+{% extends "session/_project_base.html" %}
+{% set page = "report" %}
+{% import "_ui.html" as ui %}
+{% block title %}개선 리포트 · {{ session.title }}{% endblock %}
+{% block project %}
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.detail', session_id=session.id) }}">{{ session.title }}</a>
+    <h1 class="page-title">개선 리포트</h1>
+    <p class="page-sub">버전마다 받은 의견이 얼마나 반영되었고, 장면을 다시 쓰면서 시간을 얼마나 아꼈는지 보여 줍니다.</p>
+  </div>
+</div>
+{% if not rows %}
+<section class="empty">
+  <h2 class="empty-title">아직 리포트가 없습니다</h2>
+  <p class="empty-text">한 버전의 댓글을 모아 의견을 묶고 나면 여기에 결과가 쌓입니다.</p>
+  <a class="btn btn-outline-primary" href="{{ url_for('session.detail', session_id=session.id) }}">프로젝트로 돌아가기</a>
+</section>
+{% else %}
+<div class="report-charts">
+  <figure class="chart-box">
+    <figcaption>버전별 의견 반영률</figcaption>
+    <canvas id="rate-chart" aria-label="버전별 의견 반영률 그래프" role="img"></canvas>
+  </figure>
+  <figure class="chart-box">
+    <figcaption>주제별 반영 후보 의견 수</figcaption>
+    <canvas id="category-chart" aria-label="주제별 의견 수 그래프" role="img"></canvas>
+  </figure>
+</div>
+<div class="table-responsive">
+<table class="table report-table align-middle">
+  <thead><tr>
+    <th scope="col">버전</th><th scope="col" class="num">댓글</th><th scope="col" class="num">반영 후보</th>
+    <th scope="col" class="num">의견 묶음</th><th scope="col" class="num">반영</th><th scope="col" class="num">반영률</th>
+    <th scope="col" class="num">아낀 시간</th><th scope="col" class="num">장면 재사용 / 새로 만듦</th><th scope="col" class="num">유료 API</th>
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+  <tr>
+    <th scope="row">{{ row.round }}차</th>
+    <td class="num">{{ row.metric.total_feedback }}</td>
+    <td class="num">{{ row.metric.constructive_count }}</td>
+    <td class="num">{{ row.metric.cluster_count }}</td>
+    <td class="num">{{ row.metric.approved_count }}</td>
+    <td class="num"><strong>{{ '%.0f'|format(row.metric.reflection_rate * 100) }}%</strong></td>
+    <td class="num">{{ '%.0f'|format(row.metric.time_saved_minutes or 0) }}분</td>
+    <td class="num">{{ row.metric.shots_reused or 0 }} / {{ row.metric.shots_regenerated or 0 }}
+      {% if row.metric.regen_saved_seconds %}<div class="text-muted small">제작 {{ '%.0f'|format(row.metric.regen_saved_seconds) }}초 절약</div>{% endif %}</td>
+    <td class="num">{{ row.metric.api_shots or 0 }}장면, ${{ '%.2f'|format(row.metric.api_cost_usd or 0) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="footnote">반영률은 반영한 의견 묶음에 속한 댓글 수를 반영 후보 댓글 수로 나눈 값입니다.
+  아낀 시간은 댓글 하나를 사람이 직접 읽고 정리하는 시간을 추정해 자동 처리 시간과 비교한 값입니다.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if rows %}
+<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}"></script>
+<script>
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim() || '#5B3FE0';
+  const ink2 = css.getPropertyValue('--muted').trim() || '#626A7D';
+  const line = css.getPropertyValue('--line').trim() || '#DCDFE7';
+  Chart.defaults.font.family = css.getPropertyValue('--font').trim();
+  Chart.defaults.color = ink2;
+  Chart.defaults.borderColor = line;
+  Chart.defaults.plugins.legend.display = false;
+  const topicLabel = {{ ui.TOPIC | tojson }};
+  const rounds = {{ rows | map(attribute='round') | list | tojson }};
+  const rates = {{ rows | map(attribute='metric.reflection_rate') | list | tojson }};
+  const categories = {{ categories | tojson }};
+  new Chart(document.getElementById('rate-chart'), {
+    type: 'line',
+    data: { labels: rounds.map(r => r + '차'),
+            datasets: [{ label: '반영률 (%)', data: rates.map(r => Math.round(r * 100)), borderColor: accent,
+                         backgroundColor: accent, pointRadius: 4, borderWidth: 2, tension: 0.25 }] },
+    options: { scales: { y: { min: 0, max: 100, ticks: { callback: v => v + '%' } }, x: { grid: { display: false } } } },
+  });
+  new Chart(document.getElementById('category-chart'), {
+    type: 'bar',
+    data: { labels: Object.keys(categories).map(k => topicLabel[k] || k),
+            datasets: [{ label: '의견 수', data: Object.values(categories), backgroundColor: accent, borderRadius: 4, maxBarThickness: 36 }] },
+    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } },
+  });
+</script>
+{% endif %}
+{% endblock %}

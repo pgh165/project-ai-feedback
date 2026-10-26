@@ -1,0 +1,13 @@
+# 형식 예시 (노드 ID는 가짜 값). 실제 mapping.yaml은 Export (API) JSON을 받은 뒤
+# `python run.py --scan-workflows`로 후보를 확인하고 사용자 확인을 거쳐 작성한다.
+ltx23_i2v:
+  prompt:       {node: "6",  input: text}
+  negative:     {node: "7",  input: text}
+  seed:         {node: "25", input: noise_seed}
+  width:        {node: "40", input: width}
+  height:       {node: "40", input: height}
+  frames:       {node: "40", input: length}
+  fps:          {node: "41", input: frame_rate}
+  image:        {node: "50", input: image}      # LoadImage (첫 프레임)
+  # last_image:    {node: "51", input: image}   # flf 워크플로만
+  # control_video: {node: "52", input: video}   # iclora_control 워크플로만

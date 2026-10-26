@@ -1,0 +1,23 @@
+# 학과 소개 30초 v5: 로봇팔 후보 추가. 측면/정면 고정, 단순한 두 손가락 평행 그리퍼, 흰 책상, 한 컷 한 동작.
+project: dept-intro-30s
+defaults:
+  workflow: ltx25_t2v
+  width: 1280
+  height: 704
+  frames: 97
+  fps: 24
+  seed: 1000
+  negative_prompt: ""
+shots:
+  - id: r06
+    seed: 1001
+    prompt: "A white six-axis industrial robotic arm with a simple two-finger parallel gripper lowers to a small red cube on a clean white table, closes the gripper around the cube and lifts it straight up. Static side view, medium shot, soft even light, sharp focus, smooth precise motion."
+  - id: r07
+    seed: 1011
+    prompt: "A white industrial robotic arm with a simple two-finger parallel gripper picks up a small red cube from a white tray on the left and places it into a white tray on the right, on a clean white table. Static side view, wide shot, soft even light, sharp focus, smooth precise motion."
+  - id: r08
+    seed: 1021
+    prompt: "A white industrial robotic arm with a small camera mounted on its wrist and a simple two-finger parallel gripper hovers above a clean white table with three cubes in a row, one red, one green and one blue, then lowers and grips the red cube. Static side view, soft even light, sharp focus, smooth precise motion."
+  - id: r09
+    seed: 1031
+    prompt: "A white desktop robotic arm with four joints rotates at its base and swings slowly from right to left above a clean white table, its simple two-finger parallel gripper pointing downward. Static wide side view, bright even lab lighting, sharp focus, smooth motion."

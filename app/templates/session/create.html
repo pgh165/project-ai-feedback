@@ -1,0 +1,22 @@
+{% extends "_app_shell.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}기획{% endblock %}
+{% block shell %}
+{# 새 프로젝트의 ① 기획 단계 — 프로젝트 화면의 기획 탭과 같은 단계. 저장하면 프로젝트가 생기고 그 기획 탭으로 이어진다. #}
+<ol class="stage-strip" aria-label="만들기 단계">
+  {% for label in ['기획', '제작', '확인', '공개', '의견'] %}
+  <li class="{{ 'is-active' if loop.first }}" {{ 'aria-current=step' if loop.first }}><span>{{ loop.index }}</span>{{ label }}</li>
+  {% endfor %}
+</ol>
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.home') }}">다시 쓰기</a>
+    <h1 class="page-title">① 기획</h1>
+    <p class="page-sub">{% if from_home %}제목과 종류를 추천해 두었습니다.{% else %}만들고 싶은 영상을 적어 주세요.{% endif %}
+      {{ ui.tip('장면 구성과 내레이션은 비워 두어도 됩니다. 저장한 뒤에도 제작을 시작하기 전까지는 기획 탭에서 고칠 수 있습니다.') }}</p>
+  </div>
+</div>
+
+{% set pf_mode = 'new' %}
+{% include "session/_plan_form.html" %}
+{% endblock %}

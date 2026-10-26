@@ -1,0 +1,315 @@
+{# ① 기획 입력 — 새 프로젝트(create.html)와 프로젝트의 기획 탭(detail.html)이 같은 화면을 쓴다.
+   pf_mode: 'new'(새 프로젝트) | 'edit'(제작 전 고치기) | 'producing'(제작 중 고치기 — 고친 장면만 다시 만든다)
+   넘겨받는 값: prefill(dict), genres, pf_action(비우면 지금 주소), open_folds, open_import #}
+{% import "_ui.html" as ui %}
+{% set producing_mode = pf_mode == 'producing' %}
+<div class="ai-fill">
+  <div>
+    <strong>AI로 나머지 채우기</strong>
+    <span id="ai-fill-msg" role="status">비어 있는 칸만 채웁니다 {{ ui.tip('설명을 읽고 장면·내레이션·스타일 등 비어 있는 칸만 한국어 초안으로 채웁니다. 적어 둔 칸은 그대로 둡니다.') }}</span>
+  </div>
+  <button type="button" class="btn btn-primary btn-sm" id="ai-fill-btn" data-url="{{ url_for('session.draft_fill_route') }}">AI로 채우기</button>
+</div>
+
+<div class="create-layout">
+  <form method="post" id="create-form" class="create-form" {% if pf_action %}action="{{ pf_action }}"{% endif %}
+        data-mode="{{ pf_mode }}">
+    <fieldset class="form-section">
+      <legend>기본 정보</legend>
+      <div class="field">
+        <label class="form-label" for="f-title">영상 제목 <span class="req">필수</span></label>
+        <input class="form-control" id="f-title" name="title" required value="{{ prefill.get('title', '') }}"
+               placeholder="예: 신제품 소개 영상, 우리 동네 카페 홍보">
+      </div>
+      <div class="field">
+        <label class="form-label" for="f-genre">영상 종류</label>
+        <input class="form-control" id="f-genre" name="genre" placeholder="제품 소개, 홍보 영상, 뮤직비디오, 브이로그 …"
+               value="{{ prefill.get('genre', '') }}">
+        <div class="genre-chips" aria-label="자주 쓰는 종류">
+          {% for g in genres %}
+          <button type="button" class="example-chip example-chip-sm" data-genre="{{ g }}">{{ g }}</button>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="field">
+        <label class="form-label" for="f-synopsis">만들고 싶은 영상 <span class="req">필수</span></label>
+        <textarea class="form-control" id="f-synopsis" name="synopsis" rows="5" required
+          placeholder="무엇이 나오고, 어떤 분위기이고, 어떤 순서로 보여 주고 싶은지 자유롭게 적어 주세요.">{{ prefill.get('synopsis', '') }}</textarea>
+      </div>
+      <div class="field">
+        <span class="form-label">화면 비율 {% if producing_mode %}{{ ui.tip('장면을 만든 뒤에는 화면 비율을 바꿀 수 없습니다 (모든 장면을 새로 만들어야 합니다).') }}{% endif %}</span>
+        <div class="ratio-picker" role="radiogroup" aria-label="화면 비율">
+          {% for value, label, use in [('9:16', '세로', '쇼츠·릴스'), ('16:9', '가로', '유튜브·홍보'), ('1:1', '정사각', '피드')] %}
+          {% set ar = {'9:16': '9 / 16', '16:9': '16 / 9', '1:1': '1 / 1'}[value] %}
+          <label class="ratio-option">
+            <input type="radio" name="aspect_ratio" value="{{ value }}" {{ 'checked' if prefill.get('aspect_ratio', '9:16') == value }} {{ 'disabled' if producing_mode }}>
+            <span class="ratio-card">
+              <span class="ratio-shape" style="aspect-ratio: {{ ar }}"></span>
+              <span class="ratio-text"><strong>{{ label }} {{ value }}</strong><small>{{ use }}</small></span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+    </fieldset>
+
+    <details class="form-fold" {{ 'open' if open_folds or prefill.get('shots') or prefill.get('characters') }}>
+    <summary>장면 구성 <span class="optional">선택</span><span class="fold-hint">반복해서 나오는 대상 · 장면 길이 · 장면 목록</span></summary>
+    <fieldset class="form-section">
+      <legend class="visually-hidden">장면 구성</legend>
+      <div class="field">
+        <label class="form-label" for="f-characters">반복해서 나오는 대상 {{ ui.tip('인물·제품·장소의 생김새를 적어 두면 장면마다 같은 대상으로 보이게 하는 데 도움이 됩니다.') }}</label>
+        <textarea class="form-control" id="f-characters" name="characters" rows="2"
+          placeholder="예: 은색 무선 이어폰, 매끈한 케이스, 흰 배경">{{ prefill.get('characters', '') }}</textarea>
+      </div>
+      <div class="field field-narrow">
+        <label class="form-label" for="f-seconds">장면 하나의 길이 {% if producing_mode %}{{ ui.tip('제작 중에는 기본 길이를 바꿀 수 없습니다. 장면 줄 앞에 [6초]처럼 적으면 그 장면만 길이를 바꿔 다시 만듭니다.') }}{% endif %}</label>
+        <div class="input-group">
+          <input class="form-control" id="f-seconds" type="number" name="shot_seconds" min="1" max="8" step="1"
+                 placeholder="기본값" value="{{ prefill.get('shot_seconds', '') }}" {{ 'disabled' if producing_mode }}>
+          <span class="input-group-text">초</span>
+        </div>
+      </div>
+      <div class="field">
+        <label class="form-label" for="f-shots">장면 목록 {{ ui.tip('한 줄에 한 장면, 한국어로 적어도 됩니다(영상 모델에는 영어로 바꿔 넣고, 화면에는 적은 문장이 보입니다). 비워 두면 설명으로 장면을 나눕니다. 줄 앞에 [6초]나 [6초 시드 202]를 붙이면 그 장면만 길이를 따로 정합니다.') }}</label>
+        <textarea class="form-control mono" id="f-shots" name="shots" rows="5"
+          placeholder="예: 흰 받침대 위에서 은색 무선 이어폰이 천천히 회전한다, 부드러운 스튜디오 조명">{{ prefill.get('shots', '') }}</textarea>
+        <div class="refine-bar">
+          <button type="button" class="btn btn-outline-primary btn-sm" id="refine-btn" data-url="{{ url_for('session.draft_refine_route') }}">장면 다듬기</button>
+          {{ ui.tip('적어 둔 장면을 영상 모델이 잘 따르는 영어 묘사로 고쳐 씁니다: 맨 앞에 분위기·조명, 보이는 것만, 색은 빛의 색으로, 렌즈·카메라 움직임. 고치기 전과 후를 보여 주고, 받아들일 때만 바뀝니다. 큰 모델(26B)을 켜느라 처음엔 30초~1분 걸립니다.') }}
+          <span class="small text-muted" id="refine-msg" role="status"></span>
+        </div>
+        <details class="prompt-guide" id="prompt-guide">
+          <summary>장면 쓰는 법</summary>
+          <p class="guide-lead">장면 한 줄로 <b>첫 프레임 사진 한 장</b>(Z-Image)을 먼저 그리고, 영상 모델(LTX)이 그 사진을 몇 초 움직입니다.
+            그래서 <b>장면 하나 = 사진 한 장 + 짧은 움직임 하나</b>로 씁니다.</p>
+          <p class="guide-label">순서</p>
+          <p class="guide-template mono">분위기·장소·조명 → 주인공 생김새·위치 → 다른 사람·물건의 위치와 자세 → 동작 하나(누가·무엇을·어느 쪽으로·얼마나 천천히) → 구도 → 카메라 움직임 하나</p>
+          <table class="guide-table">
+            <thead><tr><th>이렇게</th><th>피할 것</th></tr></thead>
+            <tbody>
+              <tr><td>동작이 <b>시작되기 전</b> 모습 + 동작 하나 — "큐브는 로봇 팔 아래 책상 위, 그리퍼가 천천히 내려와 잡고 들어 올린다"</td><td>"로봇 팔이 큐브를 집어 든다"만 — 이미 든 모습을 그려 버림</td></tr>
+              <tr><td>5초에 동작 하나</td><td>입력하고, 집고, 들고, 웃고… 여러 동작</td></tr>
+              <tr><td>잡는 장면은 물체를 익숙한 작은 크기로, 놓인 자리까지 — "주사위만 한 큐브가 로봇 팔 받침대 옆 책상 위에, 집게가 양옆을 맞물려 잡는다"</td><td>그리퍼보다 큰 물체 — 손가락이 물체를 뚫고 들어감</td></tr>
+              <tr><td>관계없는 사람은 자세까지 — "두 손을 키보드 위에 둔 채"</td><td>물건을 사람 손 닿는 곳에 두기 — 사람이 집어 버림</td></tr>
+              <tr><td>분위기·조명을 맨 앞에, 색은 빛으로 — "창에서 들어오는 파란 빛"</td><td>"청은색→호박색 그레이딩" 같은 보정 용어</td></tr>
+              <tr><td>보이는 생김새 — "초록 회로 기판", "학생 세 명"</td><td>"정밀하게", "실시간 알고리즘", "학생들"</td></tr>
+              <tr><td>바라는 것만 — "모니터에 막대그래프"</td><td>"~ 말고", "~ 없이", "no text" — 오히려 그것을 그림</td></tr>
+              <tr><td>반복 인물은 장면마다 같은 말로 — "회색 후드티 남학생"</td><td>장면마다 다른 호칭</td></tr>
+            </tbody>
+          </table>
+          <p class="guide-label">예</p>
+          <p class="guide-example mono">밝고 깨끗한 로봇 실험실, 부드러운 스튜디오 조명, 흰 책상 왼쪽에 흰색 로봇 팔, 작은 빨간 큐브는 팔 받침대 옆(여성과 떨어진 곳), 오른쪽의 크림색 블라우스 여성은 두 손을 키보드에 둔 채 모니터를 본다, 로봇 팔이 열린 그리퍼를 천천히 내려 큐브를 잡고 들어 올린다, 눈높이 중간 크기 화면, 고정 카메라</p>
+          <p class="guide-note">다시 만들기 의견은 한 번에 하나씩, 고친 결과로 적어 주세요("사진이 없어" → "벽에 액자 사진 세 장"). 색·물건·배경 의견은 이미지부터, 움직임 의견은 컷만 다시 만듭니다.
+            적어 둔 장면을 이 방식으로 고쳐 쓰려면 <b>장면 다듬기</b>를 누르세요.</p>
+        </details>
+        <div class="refine-panel" id="refine-panel" hidden>
+          <ol class="refine-list" id="refine-list"></ol>
+          <div class="refine-actions">
+            <button type="button" class="btn btn-primary btn-sm" id="refine-apply">이대로 바꾸기</button>
+            <button type="button" class="btn btn-quiet btn-sm" id="refine-cancel">그대로 두기</button>
+            {% if producing_mode %}<span class="small text-warning-emphasis">바뀐 장면은 저장할 때 이미지부터 다시 만듭니다.</span>{% endif %}
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    </details>
+
+    <details class="form-fold" {{ 'open' if open_folds or prefill.get('narration') or prefill.get('style') }}>
+    <summary>소리와 스타일 <span class="optional">선택</span><span class="fold-hint">내레이션 · 영상 스타일</span></summary>
+    <fieldset class="form-section">
+      <legend class="visually-hidden">소리와 스타일</legend>
+      <div class="field">
+        <label class="form-label" for="f-narration">내레이션 {{ ui.tip('장면마다 한 줄, 한국어. 3초 장면이면 15자 안팎이 자연스럽습니다. 나중에 문장만 고치면 영상은 그대로 두고 음성만 다시 입힙니다.') }}</label>
+        <textarea class="form-control" id="f-narration" name="narration" rows="4"
+          placeholder="예: 이 로봇 팔은 카메라로 물체를 인식합니다.">{{ prefill.get('narration', '') }}</textarea>
+      </div>
+      <div class="field">
+        <label class="form-label" for="f-style">영상 스타일 {{ ui.tip('한국어로 적어도 됩니다. 비우면 기본 스타일을 씁니다.') }}</label>
+        <input class="form-control" id="f-style" name="style" placeholder="예: 밝고 깔끔한 다큐멘터리 느낌, 자연광 (비우면 기본 스타일)"
+               value="{{ prefill.get('style', '') }}">
+      </div>
+    </fieldset>
+
+    </details>
+
+    <div class="form-actions form-actions-sticky">
+      {% if pf_mode == 'new' %}<a class="btn btn-quiet" href="{{ url_for('session.home') }}">← 다시 쓰기</a>{% endif %}
+      <span class="form-text m-0"></span>
+      <span class="plan-buttons">
+        {% if producing_mode %}
+        <button class="btn btn-primary btn-lg" id="create-submit">저장하고 고친 장면만 다시 만들기</button>
+        {{ ui.tip('고친 장면 줄만 이미지부터 다시 만들고, 안 고친 장면은 만들어 둔 컷을 그대로 씁니다. 내레이션만 고치면 음성만 다시 합성합니다. 스타일을 바꾸면 모든 장면을 다시 만듭니다.') }}
+        {% else %}
+        <button class="btn btn-outline-primary btn-lg" id="create-save">기획 저장</button>
+        <button class="btn btn-primary btn-lg" id="create-submit" name="start" value="1">저장하고 제작 시작 →</button>
+        {% endif %}
+      </span>
+    </div>
+  </form>
+
+  <aside class="create-aside">
+    <section class="import-box {{ 'is-focus' if open_import }}" id="import-box">
+      <h2 class="aside-title">콘티 엑셀로 채우기 {{ ui.tip('장면별 길이·묘사·내레이션이 담긴 콘티(.xlsx)를 읽어 입력칸을 채웁니다. 저장은 직접 확인한 뒤에 됩니다.') }}</h2>
+      <label class="dropzone" for="storyboard-file">
+        <input type="file" id="storyboard-file" accept=".xlsx" data-url="{{ url_for('session.import_storyboard') }}">
+        <span class="dropzone-text" id="storyboard-name">파일 선택</span>
+      </label>
+      <button type="button" class="btn btn-outline-primary w-100 mt-2" id="storyboard-load">불러오기</button>
+      <div class="small mt-2" id="storyboard-msg" role="status"></div>
+    </section>
+
+  </aside>
+</div>
+
+<script>
+(function () {
+  const input = document.getElementById('storyboard-file');
+  const msg = document.getElementById('storyboard-msg');
+  const name = document.getElementById('storyboard-name');
+  const form = document.getElementById('create-form');
+  const set = (n, value) => {
+    if (!value) return;
+    const field = form.elements[n];
+    if (field instanceof RadioNodeList) { field.forEach(r => { r.checked = r.value === value; }); }
+    else field.value = value;
+  };
+  const aiBtn = document.getElementById('ai-fill-btn'), aiMsg = document.getElementById('ai-fill-msg');
+  aiBtn.addEventListener('click', async () => {
+    const values = {};
+    ['synopsis', 'title', 'genre', 'characters', 'shots', 'narration', 'style', 'shot_seconds'].forEach(n => {
+      values[n] = form.elements[n] ? form.elements[n].value : '';
+    });
+    if (!values.synopsis.trim()) { aiMsg.textContent = '만들고 싶은 영상 설명을 먼저 적어 주세요.'; form.elements.synopsis.focus(); return; }
+    aiBtn.disabled = true;
+    aiBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>채우는 중…';
+    aiMsg.textContent = 'AI가 초안을 쓰는 중입니다 (보통 몇 초, 모델을 처음 올리면 30초쯤).';
+    try {
+      const res = await fetch(aiBtn.dataset.url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(values)});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'AI로 채우지 못했습니다.');
+      const names = {title: '제목', genre: '종류', characters: '반복해서 나오는 대상', shots: '장면 목록', narration: '내레이션', style: '스타일'};
+      const done = [];
+      Object.entries(data.fields).forEach(([n, v]) => {
+        const field = form.elements[n];
+        if (!field || field.value.trim()) return;  // 그 사이 사용자가 적은 칸은 건드리지 않는다
+        field.value = v;
+        field.classList.add('is-ai');
+        field.addEventListener('input', () => field.classList.remove('is-ai'), {once: true});
+        done.push(names[n] || n);
+      });
+      if (done.some(n => n !== '제목' && n !== '종류')) form.querySelectorAll('details.form-fold').forEach(d => { d.open = true; });
+      aiMsg.textContent = done.length ? `${done.join(' · ')}을(를) 채웠습니다. 보라색 칸을 확인하고 고치세요.` : '채울 빈칸이 없습니다.';
+    } catch (e) {
+      aiMsg.textContent = e.message;
+    } finally {
+      aiBtn.disabled = false;
+      aiBtn.textContent = 'AI로 채우기';
+    }
+  });
+  const refineBtn = document.getElementById('refine-btn'), refineMsg = document.getElementById('refine-msg');
+  const refinePanel = document.getElementById('refine-panel'), refineList = document.getElementById('refine-list');
+  let refined = null;
+  refineBtn.addEventListener('click', async () => {
+    const values = {};
+    ['shots', 'synopsis', 'style', 'characters'].forEach(n => { values[n] = form.elements[n] ? form.elements[n].value : ''; });
+    if (!values.shots.trim()) { refineMsg.textContent = '장면 목록을 먼저 적어 주세요.'; form.elements.shots.focus(); return; }
+    refineBtn.disabled = true;
+    refineBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>다듬는 중…';
+    refineMsg.textContent = '큰 모델을 켜는 중이면 30초~1분 걸립니다.';
+    refinePanel.hidden = true;
+    try {
+      const res = await fetch(refineBtn.dataset.url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(values)});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '장면을 다듬지 못했습니다.');
+      refined = data.after;
+      refineList.innerHTML = '';
+      data.after.forEach((line, i) => {
+        const li = document.createElement('li');
+        const was = document.createElement('div'); was.className = 'refine-before'; was.textContent = data.before[i];
+        const now = document.createElement('div'); now.className = 'refine-after'; now.textContent = line;
+        li.append(was, now);
+        refineList.appendChild(li);
+      });
+      refinePanel.hidden = false;
+      refineMsg.textContent = data.note || `${data.source}로 다듬었습니다. 확인하고 바꿀지 고르세요.`;
+    } catch (e) {
+      refineMsg.textContent = e.message;
+    } finally {
+      refineBtn.disabled = false;
+      refineBtn.textContent = '장면 다듬기';
+    }
+  });
+  document.getElementById('refine-apply').addEventListener('click', () => {
+    if (!refined) return;
+    const field = form.elements.shots;
+    field.value = refined.join('\n');
+    field.classList.add('is-ai');
+    field.addEventListener('input', () => field.classList.remove('is-ai'), {once: true});
+    refinePanel.hidden = true;
+    refineMsg.textContent = '장면 목록을 바꿨습니다. 저장해야 반영됩니다.';
+  });
+  document.getElementById('refine-cancel').addEventListener('click', () => { refinePanel.hidden = true; refineMsg.textContent = ''; });
+  let confirmed = form.dataset.mode !== 'producing';
+  form.addEventListener('submit', async (e) => {  // 한국어 번역이 있으면 몇 초 걸린다
+    const btn = e.submitter || document.getElementById('create-submit');
+    if (!confirmed) {  // 제작 중: 바뀔 장면 미리보기 → 확인
+      e.preventDefault();
+      const body = new FormData(form);
+      body.append('preview', '1');
+      const res = await fetch(form.action, {method: 'POST', body});
+      const d = await res.json();
+      if (!res.ok) { alert(d.error || '확인하지 못했습니다'); return; }
+      const lines = [];
+      if (d.style) lines.push('영상 스타일이 바뀌어 모든 장면을 다시 만듭니다.');
+      if (d.regen.length) lines.push(`다시 만들 장면: ${d.regen.join(', ')} (${d.regen.length}개, 이미지부터)`);
+      if (d.dropped.length) lines.push(`빠지는 장면: ${d.dropped.join(', ')}`);
+      if (d.kept) lines.push(`그대로 쓰는 장면: ${d.kept}개`);
+      if (!d.regen.length && d.narration) lines.push(d.video_ready ? '내레이션만 바뀌어 음성만 다시 합성합니다.' : '내레이션만 바뀝니다.');
+      if (!lines.length) lines.push('장면은 바뀌지 않습니다.');
+      if (!confirm(lines.join('\n') + '\n\n저장할까요?')) return;
+      confirmed = true;
+      form.querySelectorAll('.plan-buttons .btn').forEach(b => { b.disabled = true; });
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>저장하는 중…';
+      form.submit();
+      return;
+    }
+    if (btn.name) {  // 눌린 버튼의 값(start)을 보낸 뒤 버튼을 잠근다
+      const hidden = document.createElement('input');
+      hidden.type = 'hidden'; hidden.name = btn.name; hidden.value = btn.value;
+      form.appendChild(hidden);
+    }
+    form.querySelectorAll('.plan-buttons .btn').forEach(b => { b.disabled = true; });
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>저장하는 중…';
+  });
+  document.querySelectorAll('[data-genre]').forEach(chip => {
+    chip.addEventListener('click', () => { form.elements['genre'].value = chip.dataset.genre; });
+  });
+  const box = document.getElementById('import-box');
+  if (box.classList.contains('is-focus')) { box.scrollIntoView({block: 'center'}); input.focus(); }
+  input.addEventListener('change', () => { name.textContent = input.files.length ? input.files[0].name : '파일 선택'; });
+  document.getElementById('storyboard-load').addEventListener('click', async () => {
+    if (!input.files.length) { msg.className = 'small mt-2 text-danger'; msg.textContent = '엑셀 파일을 먼저 선택하세요.'; return; }
+    const body = new FormData(); body.append('file', input.files[0]);
+    msg.className = 'small mt-2 text-muted'; msg.textContent = '읽는 중…';
+    try {
+      const res = await fetch(input.dataset.url, { method: 'POST', body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '파일을 읽을 수 없습니다.');
+      set('title', data.title); set('synopsis', data.description); set('shots', data.shots_text);
+      set('narration', data.narration); set('style', data.style); set('aspect_ratio', data.aspect);
+      if (data.seconds) form.elements['shot_seconds'].value = Math.round(data.seconds);
+      form.querySelectorAll('details.form-fold').forEach(d => { d.open = true; });
+      msg.className = 'small mt-2 text-success';
+      msg.innerHTML = '';
+      const ok = document.createElement('div');
+      ok.textContent = `장면 ${data.count}개를 불러왔습니다. 내용을 확인한 뒤 저장하세요.`;
+      msg.appendChild(ok);
+      (data.notes || []).forEach(n => { const d = document.createElement('div'); d.className = 'text-warning-emphasis'; d.textContent = '· ' + n; msg.appendChild(d); });
+    } catch (e) {
+      msg.className = 'small mt-2 text-danger'; msg.textContent = e.message;
+    }
+  });
+})();
+</script>

@@ -1,0 +1,170 @@
+{% extends "session/_project_base.html" %}
+{% set page = "review" %}
+{% import "_ui.html" as ui %}
+{% block title %}의견 검토 · {{ session.title }}{% endblock %}
+{% block project %}
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('session.detail', session_id=session.id) }}">{{ session.title }}</a>
+    <h1 class="page-title">{{ round.round_number }}차 의견 검토</h1>
+    {% if round.status == 'pending_review' %}
+    <p class="page-sub">비슷한 댓글끼리 묶어 중요한 순서로 정리했습니다. 반영할 의견을 고르면 다음 버전 프롬프트에 들어갑니다.
+      내용에 관한 의견은 <strong>시청자 반영 사항</strong>에, 나머지는 <strong>연출 지침</strong>에 들어갑니다.
+      장면을 다시 만드는 것은 <strong>반영 위치</strong>가 화면·움직임인 의견뿐입니다.
+      소리·편집 의견은 장면을 그대로 두고 <a href="#edit-plan">편집 설정</a>(전환·소리 크기·자막·장면 길이·순서)으로 올릴 영상에 반영합니다.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if round.status != 'pending_review' %}
+<section class="empty">
+  <h2 class="empty-title">검토할 의견이 없습니다</h2>
+  <p class="empty-text">지금 {{ round.round_number }}차 버전은 {{ ui.STATUS.get(round.status, (round.status,))[0] }} 단계입니다.
+    댓글을 모으고 묶으면 여기에서 검토할 수 있습니다.</p>
+  <a class="btn btn-outline-primary" href="{{ url_for('session.detail', session_id=session.id) }}">프로젝트로 돌아가기</a>
+</section>
+{% else %}
+{% set decided = clusters|rejectattr('status', 'equalto', 'pending')|list %}
+<ol class="cluster-list">
+{% for c in clusters %}
+  <li class="cluster is-{{ c.status }}" id="cluster-{{ c.id }}">
+    <div class="cluster-rank" aria-label="중요도 {{ c.rank }}위">{{ c.rank }}</div>
+    <div class="cluster-body">
+      <div class="cluster-tags">
+        {{ ui.topic(c.topic_category) }}
+        <span class="tag tag-plain">시청자 {{ c.feedback_count }}명</span>
+        {% if c.reoccurrence_count %}<span class="tag tag-warn">이전 버전에도 나온 의견 · {{ c.reoccurrence_count }}회</span>{% endif %}
+        {% if c.contradicted_by_key %}<span class="tag tag-bad" title="{{ c.contradicted_by_key }}">반대 의견 있음</span>{% endif %}
+        {% if c.promotes_to_global %}<span class="tag tag-plain" title="이후 모든 버전에 적용되는 설정으로 저장됩니다">모든 버전에 적용</span>{% endif %}
+      </div>
+      <p class="cluster-quote">{{ c.representative_text }}</p>
+      {% if c.cluster_summary %}<p class="cluster-summary">{{ c.cluster_summary }}</p>{% endif %}
+
+      {% set t = c.target %}
+      <form class="apply-target" method="post" action="{{ url_for('session.set_target', session_id=session.id, cluster_id=c.id) }}">
+        <label class="apply-target-label" for="target-{{ c.id }}">반영 위치</label>
+        <select class="form-select form-select-sm" id="target-{{ c.id }}" name="target" onchange="this.form.submit()">
+          {% for key, (label, desc) in targets.items() %}
+          <option value="{{ key }}" {{ 'selected' if key == t }}>{{ label }} — {{ desc }}</option>
+          {% endfor %}
+        </select>
+        <noscript><button class="btn btn-quiet btn-sm">바꾸기</button></noscript>
+        <span class="apply-target-effect {{ 'is-regen' if t in regen_targets }}">
+          {% if t in regen_targets %}
+            다시 만들 장면: {% for sid in c.affected_shots %}{{ sid[1:]|int }}{{ ', ' if not loop.last }}{% else %}없음{% endfor %}
+            {% if c.affected_shots|length > 2 %}<span class="text-muted">(장면을 콕 집지 않은 의견이라 여러 장면이 잡혔습니다 — 의도와 다르면 반영 위치를 바꾸세요)</span>{% endif %}
+          {% else %}
+            장면은 그대로 둡니다
+          {% endif %}
+          {% if not c.apply_target %}<span class="text-muted">· 자동 제안</span>{% endif %}
+        </span>
+      </form>
+      {% if t in ('edit', 'audio') %}
+      {% set changes = edit_changes.get(c.id, []) %}
+      <p class="edit-changes">
+        <span class="apply-target-label">바뀌는 편집</span>
+        {% for ch in changes %}<span class="tag tag-plain">{{ ch.label }}</span>{% else %}
+        <span class="text-muted">자동으로 바꿀 설정을 찾지 못했습니다 — 아래 '다음 버전 편집 설정'에서 직접 고르세요.</span>{% endfor %}
+        {% if c.status != 'approved' and changes %}<span class="text-muted">· 반영을 누르면 적용됩니다</span>{% endif %}
+      </p>
+      {% endif %}
+
+      <dl class="cluster-scores">
+        <div><dt>중요도</dt><dd>{{ ui.meter(c.priority_score, '중요도') }}</dd></div>
+        <div><dt>품질</dt><dd>{{ ui.meter(c.avg_quality_score, '품질') }}</dd></div>
+        <div><dt>심각도</dt><dd>{{ ui.meter(c.avg_severity_score, '심각도') }}</dd></div>
+        <div><dt>긴급도</dt><dd>{{ ui.meter(c.avg_urgency_score, '긴급도') }}</dd></div>
+        <div><dt>타당성</dt><dd>{{ ui.meter(c.avg_validity_score, '타당성') }}</dd></div>
+        <div><dt>묶음 일치도</dt><dd>{{ ui.meter(c.cohesion_score, '묶음 일치도') }}</dd></div>
+      </dl>
+
+      {% if c.feedback_count > 1 %}
+      <details class="cluster-comments"><summary>댓글 {{ c.feedback_count }}개 모두 보기</summary>
+        <ul>{% for f in c.feedbacks %}<li>{{ f.comment_text }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </div>
+    <form class="decision" method="post" action="{{ url_for('session.decide', session_id=session.id, cluster_id=c.id) }}"
+          aria-label="{{ c.rank }}위 의견 결정">
+      <button class="decision-btn {{ 'is-on' if c.status == 'approved' }}" name="decision" value="approve" aria-pressed="{{ 'true' if c.status == 'approved' else 'false' }}">반영</button>
+      <button class="decision-btn {{ 'is-on' if c.status == 'deferred' }}" name="decision" value="defer" aria-pressed="{{ 'true' if c.status == 'deferred' else 'false' }}">보류</button>
+      <button class="decision-btn {{ 'is-on' if c.status == 'rejected' }}" name="decision" value="reject" aria-pressed="{{ 'true' if c.status == 'rejected' else 'false' }}">반영 안 함</button>
+    </form>
+  </li>
+{% endfor %}
+</ol>
+
+<section class="edit-plan" id="edit-plan" aria-labelledby="edit-plan-title">
+  <div class="edit-plan-head">
+    <h2 class="section-title" id="edit-plan-title">다음 버전 편집 설정</h2>
+    <span class="text-muted small">{% if edit_manual %}직접 고친 설정을 씁니다{% else %}반영한 편집·소리 의견에서 자동으로 정했습니다{% endif %}</span>
+  </div>
+  <p class="edit-plan-sub">장면 영상은 다시 만들지 않고, 올릴 영상을 이어 붙일 때만 적용합니다.
+    {% if edit_current %}지금 {{ round.round_number }}차: {{ edit_current|join(' · ') }}{% endif %}</p>
+  <p class="edit-plan-summary">{% if edit_lines %}<strong>{{ round.round_number + 1 }}차에 적용:</strong> {{ edit_lines|join(' · ') }}
+    {% else %}바뀌는 편집이 없습니다.{% endif %}</p>
+
+  <details {{ 'open' if edit_manual }}>
+    <summary>직접 고치기</summary>
+    <form method="post" action="{{ url_for('session.save_edit_plan', session_id=session.id) }}" class="edit-plan-form">
+      <fieldset>
+        <legend>장면 전환</legend>
+        <label>방식
+          <select class="form-select form-select-sm" name="transition">
+            {% for key, label in transitions.items() %}<option value="{{ key }}" {{ 'selected' if edit.transition == key }}>{{ label }}</option>{% endfor %}
+          </select></label>
+        <label>길이(초) <input class="form-control form-control-sm" type="number" name="transition_sec" min="0.2" max="1.5" step="0.1" value="{{ edit.transition_sec }}"></label>
+      </fieldset>
+      <fieldset>
+        <legend>소리</legend>
+        <label>배경 소리(%) <input class="form-control form-control-sm" type="number" name="sound_gain" min="0" max="250" step="5" value="{{ (edit.sound_gain * 100)|round|int }}"></label>
+        <label>내레이션 크기(%) <input class="form-control form-control-sm" type="number" name="narration_gain" min="30" max="250" step="5" value="{{ (edit.narration_gain * 100)|round|int }}"></label>
+        <label>내레이션 빠르기(%) <input class="form-control form-control-sm" type="number" name="narration_tempo" min="70" max="140" step="2" value="{{ (edit.narration_tempo * 100)|round|int }}"></label>
+        <label>배경음악
+          <select class="form-select form-select-sm" name="music">
+            <option value="" {{ 'selected' if not edit.music }}>그대로</option>
+            {% for key, label in music_changes.items() %}<option value="{{ key }}" {{ 'selected' if edit.music == key }}>{{ label }}</option>{% endfor %}
+          </select></label>
+      </fieldset>
+      <fieldset>
+        <legend>자막 (내레이션 문장)</legend>
+        <label class="form-check"><input class="form-check-input" type="checkbox" name="subtitles" {{ 'checked' if edit.subtitles }}> YouTube 자막으로 올리기 (영상에는 굽지 않음)</label>
+      </fieldset>
+      {% if edit_shots %}
+      <fieldset>
+        <legend>장면 순서·길이</legend>
+        <label>순서 (장면 번호) <input class="form-control form-control-sm" name="order" value="{{ edit_order }}" placeholder="1, 2, 3"></label>
+        <table class="table table-sm edit-shot-table">
+          <thead><tr><th scope="col">장면</th><th scope="col">남길 길이(%)</th><th scope="col">재생 속도(%)</th></tr></thead>
+          <tbody>
+          {% for s in edit_shots %}{% set v = edit.shots.get(s.id, {}) %}
+            <tr><th scope="row">{{ loop.index }}번 <span class="text-muted">{{ '%.1f'|format(s.duration) }}초</span></th>
+              <td><input class="form-control form-control-sm" type="number" name="keep_{{ s.id }}" min="30" max="100" step="5" value="{{ ((v.keep or 1) * 100)|round|int }}" aria-label="{{ loop.index }}번 장면 남길 길이"></td>
+              <td><input class="form-control form-control-sm" type="number" name="speed_{{ s.id }}" min="50" max="200" step="5" value="{{ ((v.speed or 1) * 100)|round|int }}" aria-label="{{ loop.index }}번 장면 재생 속도"></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </fieldset>
+      {% endif %}
+      <div class="edit-plan-actions">
+        <button class="btn btn-outline-primary btn-sm">이 설정으로 저장</button>
+        {% if edit_manual %}<button class="btn btn-quiet btn-sm" name="reset" value="1">자동 제안으로 되돌리기</button>{% endif %}
+      </div>
+    </form>
+  </details>
+</section>
+
+<div class="apply-bar">
+  <div class="apply-count">의견 {{ clusters|length }}개 중 <strong>{{ clusters|selectattr('status', 'equalto', 'approved')|list|length }}개 반영</strong>,
+    {{ clusters|length - decided|length }}개 결정 전</div>
+  <div class="apply-actions">
+    <button class="btn btn-quiet" id="preview-btn" type="button"
+            data-url="{{ url_for('session.api_preview', session_id=session.id) }}">바뀌는 내용 보기</button>
+    <form class="d-inline" method="post" action="{{ url_for('session.apply', session_id=session.id) }}">
+      <button class="btn btn-primary">반영하고 다음 버전 만들기</button>
+    </form>
+  </div>
+</div>
+<pre class="diff d-none" id="preview"></pre>
+{% endif %}
+{% endblock %}

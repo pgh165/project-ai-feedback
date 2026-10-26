@@ -1,0 +1,79 @@
+{% extends "_app_shell.html" %}
+{% import "_ui.html" as ui %}
+{% block shell %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">{{ '할 일' if view == 'todo' else '내 프로젝트' }}</h1>
+    {% if view == 'todo' %}<p class="page-sub">확인하거나 골라야 다음 단계로 넘어가는 프로젝트 {{ sessions|length }}개입니다.</p>
+    {% elif sessions %}<p class="page-sub">영상 {{ sessions|length }}개. 차례가 온 일부터 처리하세요.</p>{% endif %}
+  </div>
+  <div class="head-tools d-lg-none">{# 넓은 화면에서는 왼쪽 대시보드에 같은 버튼이 있다 #}
+    <a class="btn btn-quiet btn-sm" href="{{ url_for('session.import_page') }}">완성 영상 불러오기</a>
+    <a class="btn btn-primary btn-sm" href="{{ url_for('session.home') }}">새 영상 만들기</a>
+  </div>
+</div>
+
+{% if not sessions and view == 'todo' %}
+<section class="empty">
+  <h2 class="empty-title">지금 할 일이 없습니다</h2>
+  <p class="empty-text">영상이 만들어지거나 의견이 묶이면 여기에 모입니다.</p>
+  <a class="btn btn-outline-primary" href="{{ url_for('session.index') }}">모든 프로젝트 보기</a>
+</section>
+{% elif not sessions %}
+<section class="empty">
+  <h2 class="empty-title">첫 영상을 만들어 보세요</h2>
+  <p class="empty-text">만들고 싶은 영상을 글로 설명하면 장면별로 영상을 만들고,
+    공개 후 달린 댓글에서 쓸 만한 의견을 골라 다음 버전에 반영합니다.</p>
+  <a class="btn btn-primary" href="{{ url_for('session.home') }}">새 영상 만들기</a>
+</section>
+{% else %}
+<form method="post" action="{{ url_for('session.delete_selected') }}" id="bulk-form"
+      onsubmit="return confirm(document.querySelectorAll('.pick:checked').length + '개 프로젝트의 모든 버전·댓글·영상 파일이 삭제됩니다. 되돌릴 수 없습니다. 삭제할까요?');">
+<div class="bulk-bar">
+  <label class="bulk-all"><input type="checkbox" id="pick-all"> 전체 선택</label>
+  <button type="submit" class="btn btn-quiet btn-sm text-danger" id="bulk-delete" disabled>선택 삭제 (<span id="pick-count">0</span>)</button>
+</div>
+<ul class="project-list">
+  {% for s in sessions %}
+  {% set r = s.current_round %}
+  {% set has_video = r.video_path or (s.rounds|selectattr('video_path')|list) %}
+  {% set video_round = r if r.video_path else (s.rounds|selectattr('video_path')|list|last) %}
+  <li class="project-item">
+    <label class="pick-box" title="선택"><input type="checkbox" class="pick" name="session_ids" value="{{ s.id }}"></label>
+    <a class="project-row" href="{{ url_for('session.detail', session_id=s.id) }}">
+      <span class="thumb" {{ ui.ratio_frame(s.aspect_ratio) }}>
+        {% if has_video %}
+          <video src="{{ url_for('session.video', round_id=video_round.id) }}#t=1" preload="metadata" muted playsinline tabindex="-1"></video>
+        {% else %}
+          <span class="thumb-ratio">{{ s.aspect_ratio or '9:16' }}</span>
+        {% endif %}
+      </span>
+      <span class="project-main">
+        <span class="project-title">{{ s.title }}</span>
+        <span class="project-meta">{{ s.genre or '영상' }}<span class="sep"></span>{{ r.round_number }}차 버전</span>
+      </span>
+      <span class="project-state">
+        {{ ui.status_chip(r.status) }}
+        <span class="project-next">{{ ui.next_hint(r.status) }}</span>
+      </span>
+      <span class="project-date">{{ s.created_at.strftime('%m월 %d일') if s.created_at }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+</form>
+<script>
+(function () {
+  var picks = document.querySelectorAll('.pick'), all = document.getElementById('pick-all'),
+      btn = document.getElementById('bulk-delete'), cnt = document.getElementById('pick-count');
+  function sync() {
+    var n = document.querySelectorAll('.pick:checked').length;
+    cnt.textContent = n; btn.disabled = n === 0;
+    all.checked = n > 0 && n === picks.length;
+  }
+  all.addEventListener('change', function () { picks.forEach(function (c) { c.checked = all.checked; }); sync(); });
+  picks.forEach(function (c) { c.addEventListener('change', sync); });
+})();
+</script>
+{% endif %}
+{% endblock %}

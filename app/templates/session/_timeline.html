@@ -1,0 +1,181 @@
+{# ③ 타임라인 편집기 — 올릴 영상 길이에 맞춰 자막·로고가 나오는 때를 끌어서 정한다.
+   시간표는 마지막으로 만든 올릴 영상의 실제 값(VideoRound.timeline_json, rough_cut.build가 기록).
+   저장하면 자막은 편집 설정 subtitle_times, 로고는 '정한 구간' 모드로 들어가고, 영상에는 다시 만들 때 반영된다.
+   필요한 변수: tl(= deco.timeline), deco, session, round #}
+{% import "_ui.html" as ui %}
+<section class="timeline-card" id="timeline" aria-labelledby="timeline-title"
+         data-total="{{ tl.total }}" data-cues="{{ tl.cues|tojson|forceescape }}" data-scenes="{{ tl.scenes|tojson|forceescape }}"
+         data-logo="{{ tl.logo|tojson|forceescape }}" data-custom="{{ deco.plan.subtitle_times|tojson|forceescape }}">
+  <div class="deco-head">
+    <h3 class="sub-title" id="timeline-title">타임라인</h3>
+    {{ ui.tip('위 영상과 같은 시간표입니다. 자막·로고 막대를 끌어 옮기거나 양 끝을 끌어 길이를 바꾸세요. 눈금을 누르면 그 시각으로 갑니다. 로고는 저장하고 다시 만들 때 영상에, 자막은 YouTube 자막 파일(.srt)에 반영됩니다.') }}
+  </div>
+  <div class="tl-grid">
+    <div class="tl-label"></div>
+    <div class="tl-track tl-ruler" id="tl-ruler" aria-label="시간 눈금 — 누르면 그 시각으로 이동"></div>
+    <div class="tl-label">장면</div>
+    <div class="tl-track" id="tl-scenes"></div>
+    <div class="tl-label">자막</div>
+    <div class="tl-track" id="tl-subs">
+      {% if not tl.cues %}<span class="tl-empty">{{ 'YouTube 자막을 켜고 영상을 다시 만들면 여기에 나옵니다' if not deco.plan.subtitles else '자막으로 올릴 문장이 없습니다' }}</span>{% endif %}
+    </div>
+    <div class="tl-label">로고</div>
+    <div class="tl-track" id="tl-logo">
+      {% if not tl.logo %}<span class="tl-empty">{{ '로고를 넣으면 여기에 나옵니다' if not deco.has_logo_file else '로고 넣기가 꺼져 있습니다' }}</span>{% endif %}
+    </div>
+    <div class="tl-playhead" id="tl-playhead" aria-hidden="true"></div>
+  </div>
+  <p class="hint-inline mb-1" id="tl-status">지금 <span id="tl-now">0.0</span>초 / {{ '%.1f'|format(tl.total) }}초</p>
+  <form method="post" action="{{ url_for('session.decorate', session_id=session.id) }}" class="edit-plan-actions" id="tl-form">
+    <input type="hidden" name="timeline_settings" value="1">
+    <input type="hidden" name="subtitle_times" id="tl-subtitle-times">
+    <input type="hidden" name="logo_start" id="tl-logo-start">
+    <input type="hidden" name="logo_end" id="tl-logo-end">
+    {% if deco.can_rebuild %}
+    <button class="btn btn-primary btn-sm" name="rebuild" value="1">저장하고 올릴 영상 다시 만들기</button>
+    <button class="btn btn-outline-primary btn-sm">저장만</button>
+    {% else %}
+    <button class="btn btn-outline-primary btn-sm">저장 (올릴 영상을 만들 때 적용)</button>
+    {% endif %}
+    <button type="button" class="btn btn-quiet btn-sm" id="tl-reset-subs" {{ 'hidden' if not deco.plan.subtitle_times }}>자막 시간 자동으로 되돌리기</button>
+  </form>
+</section>
+<script>
+(function () {
+  var card = document.getElementById('timeline');
+  if (!card) return;
+  var total = +card.dataset.total;
+  var scenes = JSON.parse(card.dataset.scenes), cues = JSON.parse(card.dataset.cues),
+      logo = JSON.parse(card.dataset.logo), custom = JSON.parse(card.dataset.custom) || {};
+  var video = document.querySelector('[data-panel="confirm"] .stage-video');
+  var ruler = document.getElementById('tl-ruler'), playhead = document.getElementById('tl-playhead');
+  var changed = {subs: false, logo: false};
+  var SNAP = 0.05, MIN = 0.3;
+
+  function pct(t) { return (t / total * 100) + '%'; }
+  function fmt(t) { return (Math.round(t * 10) / 10).toFixed(1); }
+  function place(el, a, b) { el.style.left = pct(a); el.style.width = pct(Math.max(b - a, 0)); }
+
+  // 눈금: 길이에 맞춰 1·2·5초 간격
+  var step = total <= 20 ? 1 : total <= 60 ? 5 : 10;
+  for (var t = 0; t <= total + 1e-6; t += step) {
+    var tick = document.createElement('span');
+    tick.className = 'tl-tick'; tick.style.left = pct(t); tick.textContent = t + 's';
+    ruler.appendChild(tick);
+  }
+
+  scenes.forEach(function (s, i) {
+    var el = document.createElement('div');
+    el.className = 'tl-block tl-scene' + (i % 2 ? ' is-alt' : '');
+    el.textContent = s.id; el.title = s.id + ' · ' + fmt(s.start) + '–' + fmt(s.end) + '초';
+    place(el, s.start, s.end);
+    document.getElementById('tl-scenes').appendChild(el);
+  });
+
+  // 자막: 장면별로 한 막대 (그 장면 문장의 처음~끝). 끌면 그 장면의 자막 구간을 정한다
+  var subs = {};
+  cues.forEach(function (c) {
+    var s = subs[c.shot] || (subs[c.shot] = {shot: c.shot, start: c.start, end: c.end, text: []});
+    s.start = Math.min(s.start, c.start); s.end = Math.max(s.end, c.end); s.text.push(c.text);
+  });
+  Object.keys(subs).forEach(function (sid) {
+    var s = subs[sid];
+    if (custom[sid]) { s.start = custom[sid][0]; s.end = custom[sid][1]; }
+    s.el = bar(document.getElementById('tl-subs'), s, 'tl-sub' + (custom[sid] ? ' is-custom' : ''), s.text.join(' '),
+               function () { changed.subs = true; custom[sid] = [s.start, s.end]; s.el.classList.add('is-custom'); sync(); });
+  });
+  var lg = null;
+  if (logo) {
+    lg = {start: logo[0], end: logo[1]};
+    bar(document.getElementById('tl-logo'), lg, 'tl-logo', '로고', function () { changed.logo = true; sync(); });
+  }
+
+  // 막대: 가운데를 끌면 옮기고, 양 끝을 끌면 길이를 바꾼다
+  function bar(track, item, cls, label, onChange) {
+    var el = document.createElement('div');
+    el.className = 'tl-block tl-drag ' + cls; el.tabIndex = 0;
+    el.innerHTML = '<span class="tl-handle is-start"></span><span class="tl-text"></span><span class="tl-handle is-end"></span>';
+    el.querySelector('.tl-text').textContent = label;
+    track.appendChild(el);
+    function draw() { place(el, item.start, item.end); el.title = label + ' · ' + fmt(item.start) + '–' + fmt(item.end) + '초'; }
+    draw();
+    var mode = null, x0 = 0, a0 = 0, b0 = 0;
+    el.addEventListener('dragstart', function (e) { e.preventDefault(); });
+    el.addEventListener('pointerdown', function (e) {
+      if (e.button > 0) return;
+      mode = e.target.classList.contains('is-start') ? 'start' : e.target.classList.contains('is-end') ? 'end' : 'move';
+      x0 = e.clientX; a0 = item.start; b0 = item.end;
+      el.setPointerCapture(e.pointerId); el.classList.add('is-dragging'); e.preventDefault();
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!mode) return;
+      var dt = (e.clientX - x0) / track.clientWidth * total;
+      dt = Math.round(dt / SNAP) * SNAP;
+      if (mode === 'move') {
+        var len = b0 - a0, a = Math.min(Math.max(a0 + dt, 0), total - len);
+        item.start = a; item.end = a + len;
+      } else if (mode === 'start') {
+        item.start = Math.min(Math.max(a0 + dt, 0), item.end - MIN);
+      } else {
+        item.end = Math.max(Math.min(b0 + dt, total), item.start + MIN);
+      }
+      draw();
+      if (video) video.currentTime = mode === 'end' ? item.end : item.start;  // 끄는 자리의 화면을 바로 보여 준다
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) {
+      el.addEventListener(t, function () {
+        if (!mode) return;
+        mode = null; el.classList.remove('is-dragging');
+        if (item.start !== a0 || item.end !== b0) onChange();
+      });
+    });
+    el.addEventListener('keydown', function (e) {  // 키보드: ←→ 0.1초 옮기기, Shift+←→ 끝을 늘이고 줄이기
+      var d = e.key === 'ArrowLeft' ? -0.1 : e.key === 'ArrowRight' ? 0.1 : 0;
+      if (!d) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.shiftKey) item.end = Math.max(Math.min(item.end + d, total), item.start + MIN);
+      else { var len = item.end - item.start; item.start = Math.min(Math.max(item.start + d, 0), total - len); item.end = item.start + len; }
+      draw(); onChange();
+    });
+    return el;
+  }
+
+  function sync() {
+    var round2 = function (v) { return Math.round(v * 100) / 100; };
+    var out = {};
+    Object.keys(custom).forEach(function (sid) { out[sid] = [round2(custom[sid][0]), round2(custom[sid][1])]; });
+    document.getElementById('tl-subtitle-times').value = JSON.stringify(out);
+    document.getElementById('tl-reset-subs').hidden = !Object.keys(out).length;
+    if (lg && changed.logo) {  // 로고를 끌었을 때만 보낸다 (안 건드리면 지금 '보이는 때' 설정 그대로)
+      document.getElementById('tl-logo-start').value = round2(lg.start);
+      document.getElementById('tl-logo-end').value = round2(lg.end);
+    }
+  }
+  sync();
+
+  document.getElementById('tl-reset-subs').addEventListener('click', function () {
+    custom = {};
+    document.getElementById('tl-subtitle-times').value = '{}';
+    document.getElementById('tl-form').requestSubmit();
+  });
+
+  // 재생 위치 ↔ 타임라인
+  var grid = card.querySelector('.tl-grid');
+  function movePlayhead(t) {
+    var r = ruler.getBoundingClientRect(), g = grid.getBoundingClientRect();
+    playhead.style.left = (r.left - g.left + r.width * t / total) + 'px';
+    document.getElementById('tl-now').textContent = fmt(t);
+  }
+  ruler.addEventListener('pointerdown', function (e) {
+    var r = ruler.getBoundingClientRect(), t = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1) * total;
+    if (video) video.currentTime = t;
+    movePlayhead(t);
+  });
+  if (video) {
+    video.addEventListener('timeupdate', function () { movePlayhead(video.currentTime); });
+    video.addEventListener('seeked', function () { movePlayhead(video.currentTime); });
+  }
+  window.addEventListener('resize', function () { movePlayhead(video ? video.currentTime : 0); });
+  movePlayhead(0);
+})();
+</script>

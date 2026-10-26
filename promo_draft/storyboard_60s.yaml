@@ -1,0 +1,53 @@
+# dept_promo_storyboard_60s.xlsx 기반 60초 콘티 (LTX-2.5). s10(로고·슬로건)은 편집 단계라 생성 제외.
+# 사진이 없는 I2V/제어 장면은 T2V 임시본으로 대체(사진이 들어오면 workflow를 ltx25_i2v로 바꾸고 image를 지정).
+# 부정 프롬프트는 CFG=1이라 효과가 없어 비워 둔다.
+project: dept-promo-60s
+defaults:
+  workflow: ltx25_t2v
+  width: 1024
+  height: 576
+  frames: 145
+  fps: 24
+  seed: 100
+  negative_prompt: ""
+shots:
+  - id: s01
+    frames: 121
+    seed: 100
+    prompt: "A dark screen slowly comes alive as thin glowing circuit traces spread outward from the center like veins of light, branching across the frame. Deep black background with cyan and white glow. Slow push-in camera. Cinematic, minimal, high contrast."
+  - id: s02a
+    frames: 73
+    seed: 101
+    prompt: "An industrial robotic arm smoothly picks up a small metal part from a conveyor and places it into a tray in a bright modern factory. Clean white and gray surfaces, soft reflections. Camera slowly tracks sideways. Even daylight, realistic."
+  - id: s02b
+    frames: 73
+    seed: 111
+    prompt: "A white self-driving electric car with a small sensor on its roof drives smoothly along an empty city road in bright daylight, gently following a curve. A low tracking camera follows alongside the car. Clean modern surroundings, realistic, smooth motion."
+  - id: s03
+    workflow: ltx25_i2v
+    image: assets/photos/prep/stm32_16x9.png
+    seed: 102
+    prompt: "Use the provided image as the first frame. The development board lies on a clean surface and stays exactly as shown. A row of small LEDs on the board lights up one by one from left to right, then blinks together. Static macro shot with a slight focus pull and almost no camera movement. Warm practical lighting, tiny reflections on the solder joints. The shape and layout of the board remain unchanged."
+  - id: s04
+    workflow: ltx25_i2v
+    frames: 169
+    image: assets/photos/prep/rpi5_16x9.png
+    seed: 103
+    prompt: "Use the provided image as the first frame. The small single-board computer lies on a desk and stays exactly as shown. Its status light turns from orange to green. Slow push-in camera toward the center of the board with shallow depth of field. Cool soft lighting in a modern lab. The shape and layout of the board remain unchanged."
+  - id: s05
+    seed: 104
+    prompt: "A small toy-sized autonomous car prototype with a camera mounted on top drives smoothly along a black taped lane track on a lab floor, gently turning through a curve. Low camera angle at floor level following beside the car, the prototype fills the frame and the empty lab behind it is softly blurred. Bright overhead lighting, slight motion blur on the wheels. Realistic."
+  - id: s06
+    frames: 169
+    seed: 105
+    prompt: "A small wheeled robot with an ultrasonic sensor rolls forward across a workbench. A hand slowly enters from the edge of the frame toward its sensor, and the robot stops while a red LED on top turns on. Low side angle at table height. Bright, even lab lighting. Smooth, realistic motion."
+  - id: s07
+    seed: 106
+    prompt: "A cozy small studio room at dusk. A young Korean person seen from behind walks in through the door, warm ceiling lights fade on and a small desk fan starts spinning, while a tiny sensor on the wall glows blue. Wide static shot from the corner of the room. Warm and cool mixed lighting, calm atmosphere."
+  - id: s08
+    frames: 169
+    seed: 107
+    prompt: "A young Korean student with short black hair wearing clear safety glasses solders a component onto a green circuit board at a workbench, a thin wisp of smoke rising from the soldering iron. Behind, teammates gather around a laptop with a blurred screen, discussing. Seen over the shoulder at a distance. Slow dolly to the side. Warm overhead lighting, focused teamwork atmosphere."
+  - id: s09
+    seed: 108
+    prompt: "A small quadcopter drone lifts off from a display table at a university project exhibition and hovers steadily at eye level, its LEDs glowing green. Korean visitors and students in the background clap, softly out of focus. Camera slowly orbits the drone. Bright daylight through large windows."

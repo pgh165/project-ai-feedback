@@ -1,0 +1,24 @@
+# Web
+Flask>=3.0,<4.0
+Flask-SQLAlchemy>=3.1
+python-dotenv>=1.0
+
+# 로컬 AI (CPU 실행)
+torch>=2.2
+sentence-transformers>=3.0
+transformers>=4.40
+scikit-learn>=1.4
+hdbscan>=0.8.33
+numpy>=1.26
+
+# 외부 API (키 없으면 폴백 동작)
+anthropic>=0.40
+requests>=2.31
+
+# ComfyUI 연동 (워크플로 mapping.yaml 읽기)
+# websocket-client는 넣지 않는다 — 없으면 /history 폴링으로 완료를 확인하고, 지금은 이 경로만 검증됨
+pyyaml>=6.0
+
+# 로고 .ai/.pdf → 투명 PNG (PDFium, Apache-2.0 / Pillow, MIT-CMU)
+pypdfium2>=4.30
+pillow>=10.0
