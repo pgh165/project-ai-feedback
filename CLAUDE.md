@@ -84,9 +84,9 @@ PNG·JPG·WEBP 또는 Illustrator **.ai(PDF 호환)·.pdf** — `vector_to_png`(
 `bgm.steady_offset`이 소리 크기가 가장 고른 구간(도입·끝맺음·끊긴 곳 피함)을 골라 `offset`부터 섞는다 — 영상 길이(20초)로 만들면
 모델이 도입·본곡·끝맺음을 욱여넣어 갑자기 조용해지거나 커졌다. 곡 설명은 영어로 적어야 잘 따른다. 내레이션이 나오면 `sidechaincompress`로 낮춘다.
 다음 버전에 같은 곡이 이어지고, 의견(`edit_plan` "music": on/reroll/off)일 때만 바꾼다. YouTube 설명에 'MiniMax-Music3' 표기를 붙인다.
-**배경음악·음성 탭**: 배경음악 설정과 내레이션 목소리(`pipeline/voice.py`, 프로젝트 공통 `PipelineSession.voice_json` — 켜기/끄기·Qwen3-TTS 화자·말투 지시문)와
+**배경음악·음성 탭**: 배경음악 설정과 내레이션 목소리(`pipeline/voice.py`, 프로젝트 공통 `PipelineSession.voice_json` — 켜기/끄기·목소리)와
 이 버전의 내레이션 크기·빠르기(`edit_plan` narration_gain/tempo)를 고친다. 목소리를 바꾸면 TTS 캐시 키가 달라져 음성만 다시 합성된다.
-말투는 화면에 한국어 이름, 모델에는 영어 지시문. 한국어 모국어 화자는 sohee뿐(방언 화자 eric·dylan은 뺌). "미리 듣기"는 첫 내레이션 한 문장만 합성(`/session/<id>/voice/preview`, 30초~1분).
+Qwen3-TTS는 품질이 나빠 없앴다(2026-11-02) — 예전에 저장한 Qwen 목소리는 기본 목소리로 읽는다. "미리 듣기"는 첫 내레이션 한 문장만 합성(`/session/<id>/voice/preview`, 30초~1분).
 
 ### 프롬프트 다듬기 · 장면 다시 만들기
 **프롬프트 다듬기**: 다음 버전은 템플릿 갱신이 기본이고, 내용 의견이 있으면 LLM(Claude → Ollama → ComfyUI Gemma, `llm.py`)이
@@ -147,6 +147,12 @@ PNG·JPG·WEBP 또는 Illustrator **.ai(PDF 호환)·.pdf** — `vector_to_png`(
   (2026-10-23 시험) 같은 컷에서 뽑은 화면만 끝으로 쓴다.
   '늘려줘'·'나레이션이 빨라'·'내레이션에 맞춰'처럼 얼마나를 말하지 않으면 내레이션을 합성해 재고(`orchestrator._narration_fit_seconds`)
   1배속으로 들어가는 길이로 맞춘다: 말 + 말 시작 지연 + 디졸브 겹침(마지막 장면 제외) + 앞뒤 잘라 냄. 이미 들어가면 예전처럼 1.5배. 끄면 예전처럼 한 번에 러프컷까지 만든다.
+- **움직임 경로** (`pipeline/motion_tracks.py`, `POST /api/rounds/<id>/shots/<sid>/motion {"width","height","tracks"}`, `tracks: null`이면 지움, `orchestrator.set_shot_motion`): 경로가 있는 장면만 `COMFYUI_WORKFLOW_MOTION`(`ltx25_motion`, LTX Motion Control IC-LoRA)으로 만든다.
+  저장 위치는 `shot["motion"]`이고 경로를 그린 첫 프레임 파일에 묶인다(`is_active`) — 첫 프레임을 다시 뽑으면 좌표가 어긋나 경로 없이 만들고 상태 API에 `motion.stale`로 알린다. 끝 프레임 고정이 경로보다 우선한다. 장면 서명에 들어가며, 묘사가 같으면 다음 버전으로 이어진다.
+  이미지 확인 단계면 저장만, 컷 확인·올릴 영상 확인이면 그 장면의 컷만 새 버전으로 만든다. 같은 경로면 다시 만들지 않는다. ComfyUI-LTXVideo 노드·LoRA가 없으면 일반 I2V로 몰래 넘어가지 않고 409로 설치를 안내한다(`motion_problem`).
+  **움직임 지정 화면** (`_scene_viewer.html`의 `.motion-panel`, `static/js/motion_editor.js`): 첫 프레임에 관절·물체를 차례로 찍고 프리셋(`motion_tracks.PRESETS`: 관절 접기·집어 올리기)을 고르면 `POST /api/motion/preview`가 돌려준 경로를 뼈대로 미리 보고 저장한다. 경로 계산은 서버(`build_preset`)만 한다 — 순기구학·역기구학이라 팔 길이가 유지된다(점을 손으로 옮기면 팔이 늘어났다). 물체가 집게 폭보다 크거나 팔이 안 닿으면 안내한다.
+  **문장으로 동작 만들기** (`pipeline/motion_plan.py`, `POST /api/motion/plan {"text"}`): LLM은 좌표가 아니라 관절 각도 계획(`joints`)·집기(`grasp`)·불가능(`unsupported`)만 답하고, 경로는 `build_preset`의 `joints` 프리셋이 계산한다. 관절 위치는 사람이 찍는다. 저장하지 않으며 화면이 값을 채워 사람이 미리 보기로 확인한다. 2026-11-03 18문장 시험: 26B 18/18(지시문 수정 후, 첫 시험 17/18), e2b 11/18(불가능한 동작도 억지로 만듦) — e2b로 대신하면 화면에 알린다.
+  `takes`(1~4): 시드를 바꿔 만들 컷 수 (집어 올리기 기본 3 — 시드에 따라 물체가 따라오지 않는다). 2D 계산이라 옆에서 본 팔에만 맞는다.
 - **화면상 단계 구분**: ② 제작 = 장면별 영상 만들기(이미지 → 컷), ③ 확인 = 올릴 영상(러프컷) 만들기·확인·공개.
   서버 상태는 그대로(`generating`)지만 러프컷 작업(`payload.stage == "rough"`)이 돌거나 러프컷 합성이 실패하면
   `compute_steps`가 ③에 표시한다(`rough_cut_in_progress`, `_move_rough_cut_to_confirm`). 상세 화면은 ②에서 러프컷을 숨기고
@@ -183,7 +189,7 @@ PNG·JPG·WEBP 또는 Illustrator **.ai(PDF 호환)·.pdf** — `vector_to_png`(
 | 첫 프레임 이미지 | Z-Image Turbo (`zimage_t2i`: `z_image_turbo_bf16`, `qwen_3_4b`, `ae`) | — | — | 불필요 |
 | 글(번역·AI로 채우기·장면 묘사·다듬기) | Gemma4 e2b (`gemma4_e2b_it_int8_convrot`, ComfyUI `TextGenerate`) | — | — | 불필요 |
 | 배경음악 | MiniMax Music 3 (`MUSIC_DIT`/`MUSIC_TEXT_ENCODER`/`MUSIC_VAE`, ComfyUI) | — | — | 불필요 |
-| 내레이션 TTS | edge-tts(기본, 인터넷) → Supertonic-3(로컬) / Qwen3-TTS(선택) | — | — | 불필요 |
+| 내레이션 TTS | edge-tts(기본, 인터넷) → Supertonic-3(로컬) | — | — | 불필요 |
 | 영상 생성 (`local` 어댑터, 예전) | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` | Apache 2.0 | ~29 GB | 불필요 |
 
 > **중요**: mDeBERTa는 HuggingFace 인증이 필요해 기본 분류기로 사용하지 않는다.
@@ -279,7 +285,7 @@ app/
       factory.py           # create_adapter / resolve_local_adapter(mock 폴백) /
                            #   create_commercial_adapter / create_adapter_for_shot
       comfyui/rough_cut.py # 러프컷 합성(ffmpeg): 앞뒤 잘라 냄·전환·내레이션 트랙(장면 길이에 맞춰 배속)·로고·배경음악 + 자막 .srt
-    narration/             # 내레이션 TTS (edge/supertonic은 venv_tts2 작업자, qwen은 venv_tts) + fit_plan(장면에 맞추기)
+    narration/             # 내레이션 TTS (edge/supertonic은 venv_tts2 작업자) + fit_plan(장면에 맞추기)
     feedback_target.py     # 의견 → 반영 위치(scene/motion/audio/edit/content), 길이 요청 읽기, 장면 묘사 고쳐 쓰기
     edit_plan.py           # 편집 설정(전환·소리 크기·빠르기·자막·장면 길이·순서) + 의견 → 편집 제안
     overlay.py · bgm.py · music.py · voice.py  # 로고·자막(.srt) / 배경음악 설정·곡 생성(ComfyUI) / 목소리 설정
@@ -381,7 +387,7 @@ instance/
 | `RUNWAY_API_BASE` / `API_VERSION` / `MODEL` / `T2V_MODEL` / `RATIO` | 코드 참고 | 공급자 변경에 코드 수정이 필요 없도록 전부 설정 |
 | `COMMERCIAL_COST_PER_SEC_USD` | `0.12` | 예상 비용 (결제 전 공식 가격 확인 필요) |
 | `COMMERCIAL_BUDGET_USD` | `30` | 세션당 상용 API 예산 상한 |
-| `VOICE_ADAPTER` / `VOICE_FALLBACK` | `edge` / `supertonic` | 내레이션 TTS: `edge`(Microsoft 신경망 음성 SunHi·InJoon·Hyunsu, 계정 불필요·**인터넷 필요**) / `supertonic`(Supertonic-3, 로컬 CPU·오프라인) / `qwen`(Qwen3-TTS — 한국어가 어색해 기본에서 뺌) / `windows` / `none`. 기본 엔진이 실패하면 FALLBACK으로 다시 합성. edge·supertonic은 `venv_tts2`(`TTS2_PYTHON`)의 `narration/tts2_worker.py`로 돈다 |
+| `VOICE_ADAPTER` / `VOICE_FALLBACK` | `edge` / `supertonic` | 내레이션 TTS: `edge`(Microsoft 신경망 음성 SunHi·InJoon·Hyunsu, 계정 불필요·**인터넷 필요**) / `supertonic`(Supertonic-3, 로컬 CPU·오프라인) / `windows` / `none`. 기본 엔진이 실패하면 FALLBACK으로 다시 합성. edge·supertonic은 `venv_tts2`(`TTS2_PYTHON`)의 `narration/tts2_worker.py`로 돈다 |
 | `EDGE_TTS_VOICE` / `SUPERTONIC_VOICE` | `ko-KR-SunHiNeural` / `F1` | 엔진별 기본 목소리. 프로젝트마다 ③ 확인 탭에서 바꿀 수 있다(`voice.py`, "엔진:목소리") |
 | `CLIP_TRIM_HEAD_SEC` / `CLIP_TRIM_TAIL_SEC` | `0.15` / `0.1` | 러프컷에서 AI가 만든 컷의 시작 멈칫·끝 느려짐을 잘라 낸다(불러온 원본 장면은 그대로). 전환 기본값은 디졸브 0.4초(`edit_plan.DEFAULTS`) — 따로 만든 컷을 바로 붙이면 어색했다 |
 | `BGM_AUTO` | `true` | 배경음악을 정하지 않은 버전은 ③ 확인(러프컷)에서 곡 설명을 제안받아 곡을 만들어 깐다. 끄면 그 값이 저장된다 |
@@ -619,9 +625,9 @@ project_ai_feedback/
 - `COMFYUI_WORKFLOWS_DIR` 기본값은 `promo_draft/workflows` — 워크플로를 한 곳에서만 관리한다.
 - 쓰지 않는 예전 파일은 `_archive/`에 모아 둔다(코드가 참조하지 않음, 지워도 동작에 영향 없음).
 - 가상환경은 프로젝트 안의 `venv`를 쓴다:
-  `.\venv\Scripts\python.exe run.py` (워크스페이스 폴더에서 실행). Qwen3-TTS·번역 작업자는 `venv_tts`,
+  `.\venv\Scripts\python.exe run.py` (워크스페이스 폴더에서 실행).
   edge-tts·Supertonic은 `venv_tts2` (`py -3.11 -m venv venv_tts2; .\venv_tts2\Scripts\pip install edge-tts supertonic`).
-- ComfyUI 설치 폴더·모델·`extra_model_paths.yaml`은 건드리지 않는다 (`D:\capstone\ComfyUI`, `Comfy-Desktop`).
+- ComfyUI 설치 폴더·모델·`extra_model_paths.yaml`은 사용자 승인 없이 건드리지 않는다 (`D:\capstone\ComfyUI`, `Comfy-Desktop`). 승인받아 추가한 것: `custom_nodes/ComfyUI-LTXVideo`(+requirements)와 `ltx-2.3-22b-ic-lora-motion-track-control-ref0.5` LoRA (움직임 경로용, 2026-11-03). 패키지는 ComfyUI를 끈 뒤 기존 버전을 고정해 설치한다 — 켠 채로 설치하면 파일 잠금으로 패키지가 깨진다.
 
 ## 데모 재생 (시연 영상 촬영용)
 

@@ -106,9 +106,45 @@
       </form>
       {% endif %}
     </div>
+    {% if can_regen and sc.image %}
+    {% set motion_stale = sc.motion and sc.motion.image != sc.image.image_path %}
+    <details class="motion-panel" data-url="{{ url_for('session.shot_motion', round_id=round.id, shot_id=sc.id) }}"
+             data-image-step="{{ '1' if image_mode else '0' }}" data-motion="{{ sc.motion|tojson|forceescape }}">
+      <summary>움직임 지정{% if motion_stale %} <span class="motion-badge is-stale">첫 프레임이 바뀌어 경로가 적용되지 않습니다</span>{% elif sc.motion %} <span class="motion-badge">경로 적용 중</span>{% endif %}</summary>
+      <div class="motion-editor">
+        <div class="motion-stage">
+          <img class="motion-image" alt="장면 {{ sc.index }} 첫 프레임" data-src="{{ url_for('session.shot_image', render_id=sc.image.id) }}">
+          <canvas class="motion-canvas" aria-label="첫 프레임에 관절과 물체 위치를 찍는 화면"></canvas>
+        </div>
+        <div class="motion-side">
+          <label>원하는 동작을 문장으로 {{ ui.tip('AI가 문장을 관절 동작으로 바꿉니다. 틀릴 수 있으니 뼈대 미리 보기로 확인하고, 필요하면 각도를 고치세요. 첫 프레임에 없는 물체나 카메라 쪽으로 다가오는 동작은 만들 수 없습니다.') }}
+            <textarea class="form-control form-control-sm motion-text" rows="2" maxlength="300" placeholder="예: 팔을 들어 올리고 손목을 위아래로 흔들어"></textarea></label>
+          <button type="button" class="btn btn-outline-primary btn-sm motion-ai">AI로 동작 만들기</button>
+          <p class="motion-summary" aria-live="polite"></p>
+          <label>동작 {{ ui.tip('옆에서 본 로봇팔에 맞춘 동작입니다. 카메라 쪽으로 뻗는 팔은 원근을 계산하지 않아 어긋날 수 있습니다.') }}
+            <select class="form-select form-select-sm motion-preset"></select></label>
+          <div class="motion-params"></div>
+          <label>만들 컷 수 {{ ui.tip('시드에 따라 결과가 갈립니다. 집어 올리기는 물체가 따라오지 않는 컷이 나올 수 있어 여러 개를 뽑아 고르세요.') }}
+            <select class="form-select form-select-sm motion-takes">
+              <option value="1">1개</option><option value="2">2개</option><option value="3">3개</option><option value="4">4개</option>
+            </select></label>
+          <p class="motion-guide" aria-live="polite"></p>
+          <p class="motion-message" role="alert"></p>
+          <div class="motion-actions">
+            <button type="button" class="btn btn-quiet btn-sm motion-undo">한 점 되돌리기</button>
+            <button type="button" class="btn btn-quiet btn-sm motion-reset">점 모두 지우기</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm motion-preview" disabled>뼈대 미리 보기</button>
+            <button type="button" class="btn btn-primary btn-sm motion-save" disabled>{{ '경로 저장' if image_mode else '경로대로 컷 만들기' }}</button>
+            {% if sc.motion %}<button type="button" class="btn btn-outline-danger btn-sm motion-clear">경로 지우기</button>{% endif %}
+          </div>
+        </div>
+      </div>
+    </details>
+    {% endif %}
   </article>
   {% endfor %}
 </section>
+<script src="{{ url_for('static', filename='js/motion_editor.js') }}" defer></script>
 <script>
 (function () {
   var sec = document.querySelector('.scene-section');

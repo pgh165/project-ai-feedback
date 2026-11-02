@@ -432,13 +432,6 @@
             <option value="{{ key }}" {{ 'selected' if snd.speaker == key }}>{{ item[0] }} — {{ item[1] }}</option>
             {% endfor %}
           </select></label>
-        <label id="voice-tone-box" {{ 'hidden' if snd.engine != 'qwen' }}>말투 (Qwen만)
-          <select class="form-select form-select-sm" id="voice-tone" name="voice_tone">
-            {% for key, item in snd.tones.items() %}<option value="{{ key }}" {{ 'selected' if snd.voice.tone == key }}>{{ item[0] }}</option>{% endfor %}
-          </select></label>
-        <label class="deco-wide" id="voice-instruct-box" {{ 'hidden' if snd.voice.tone != 'custom' or snd.engine != 'qwen' }}>말투 직접 적기 (영어로 적으면 가장 잘 따릅니다)
-          <input class="form-control form-control-sm" id="voice-instruct" name="voice_instruct" maxlength="300"
-                 value="{{ snd.voice.instruct }}" placeholder="예: Speak slowly and gently, like a documentary narrator."></label>
         <div class="deco-wide voice-preview">
           <button type="button" class="btn btn-quiet btn-sm" id="voice-preview-btn">미리 듣기</button>
           <span class="hint-inline" id="voice-preview-msg"></span>
@@ -487,15 +480,7 @@
   {% if snd.can_choose %}
   <script>
   (function () {
-    var speaker = document.getElementById('voice-speaker'), tone = document.getElementById('voice-tone'),
-        toneBox = document.getElementById('voice-tone-box'), box = document.getElementById('voice-instruct-box');
-    function sync() {
-      var qwen = speaker.value.indexOf('qwen:') === 0;
-      toneBox.hidden = !qwen;
-      box.hidden = !qwen || tone.value !== 'custom';
-    }
-    speaker.addEventListener('change', sync);
-    tone.addEventListener('change', sync);
+    var speaker = document.getElementById('voice-speaker');
     var btn = document.getElementById('voice-preview-btn'), msg = document.getElementById('voice-preview-msg'),
         audio = document.getElementById('voice-preview-audio');
     btn.addEventListener('click', async function () {
@@ -503,7 +488,7 @@
       msg.textContent = '합성하는 중…';
       try {
         var res = await fetch({{ snd.preview_url|tojson }}, {method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({speaker: speaker.value, tone: tone.value, instruct: document.getElementById('voice-instruct').value})});
+          body: JSON.stringify({speaker: speaker.value})});
         var data = await res.json();
         if (!res.ok) { msg.textContent = data.error || '미리 듣기 실패'; return; }
         msg.textContent = '"' + data.text + '"';

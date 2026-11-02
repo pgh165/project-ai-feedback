@@ -72,3 +72,16 @@ ltx25_flf2v:
   fps:       {node: "43", input: value}
   image:     {node: "10", input: image}                # LoadImage (첫 프레임)
   end_image: {node: "11", input: image}                # LoadImage (끝 프레임)
+
+# LTX-2.5 움직임 경로 (Motion Control IC-LoRA). 공식 LTX-2.5_ICLoRA_Motion_Track_Distilled 워크플로의 단일 단계 구조를 API로 옮긴 것.
+# 경로가 있는 장면만 쓴다 (motion_tracks.py). ComfyUI-LTXVideo 노드와 ltx-2.3-22b-ic-lora-motion-track-control LoRA 필요.
+ltx25_motion:
+  prompt:   {node: "20", input: text}
+  negative: {node: "21", input: text}
+  seed:     {node: "29", input: noise_seed}
+  width:    {node: "40", input: value}
+  height:   {node: "41", input: value}
+  frames:   {node: "42", input: value}
+  fps:      {node: "43", input: value}
+  image:    {node: "6", input: image}
+  tracks:   {node: "23", input: tracks}

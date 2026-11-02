@@ -80,6 +80,8 @@ class Config:
     COMFYUI_WORKFLOW_T2I = os.getenv("COMFYUI_WORKFLOW_T2I", "zimage_t2i")
     # 처음·끝 프레임 (컷 확인 '이 순간을 끝으로 다시 만들기'). 공식 템플릿 video_ltx2_5_flf2v를 API 형식으로 옮긴 것
     COMFYUI_WORKFLOW_FLF = os.getenv("COMFYUI_WORKFLOW_FLF", "ltx25_flf2v")
+    # 움직임 경로 (Motion Control IC-LoRA). 경로가 있는 장면만 쓴다. ComfyUI-LTXVideo 노드와 LoRA가 필요하다
+    COMFYUI_WORKFLOW_MOTION = os.getenv("COMFYUI_WORKFLOW_MOTION", "ltx25_motion")
     # 단계별 확인: 이미지 → (확인·다시 뽑기) → 컷 영상 → (확인·다시 뽑기) → 사람이 누르면 러프컷.
     # 꺼져 있으면 예전처럼 한 번에 러프컷까지 만든다. comfyui 어댑터에서만 동작한다.
     COMFYUI_STAGED_REVIEW = _bool("COMFYUI_STAGED_REVIEW", False)
@@ -124,7 +126,7 @@ class Config:
     TRANSLATE_COMFY_MODEL = os.getenv("TRANSLATE_COMFY_MODEL", "gemma4_e2b_it_int8_convrot.safetensors")
     TRANSLATE_COMFY_CLIP_TYPE = os.getenv("TRANSLATE_COMFY_CLIP_TYPE", "ltxv")
     TRANSLATE_TIMEOUT_SEC = int(os.getenv("TRANSLATE_TIMEOUT_SEC", "900"))  # 영상 생성 중이면 큐에서 기다린다
-    # edge(Microsoft 신경망 음성, 계정 불필요·인터넷 필요) / supertonic(로컬 CPU) / qwen(Qwen3-TTS, 한국어 어색) / windows / none
+    # edge(Microsoft 신경망 음성, 계정 불필요·인터넷 필요) / supertonic(로컬 CPU) / windows / none
     VOICE_ADAPTER = os.getenv("VOICE_ADAPTER", "edge")
     # 러프컷: AI가 만든 컷의 시작 멈칫·끝 느려짐을 잘라 낸다 (불러온 원본 장면은 그대로). 0이면 자르지 않음
     SHOT_MAX_SECONDS = float(os.getenv("SHOT_MAX_SECONDS", "8"))  # 의견으로 장면 길이를 늘릴 때 최대 길이
@@ -136,12 +138,6 @@ class Config:
     TTS2_TIMEOUT_SEC = int(os.getenv("TTS2_TIMEOUT_SEC", "300"))
     EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "ko-KR-SunHiNeural")  # SunHi(여) / InJoon(남) / HyunsuMultilingual(남)
     SUPERTONIC_VOICE = os.getenv("SUPERTONIC_VOICE", "F1")  # F1~F5 / M1~M5
-    QWEN_TTS_PYTHON = os.getenv("QWEN_TTS_PYTHON", "")  # 비우면 <프로젝트>/venv_tts
-    QWEN_TTS_MODEL = os.getenv("QWEN_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
-    QWEN_TTS_SPEAKER = os.getenv("QWEN_TTS_SPEAKER", "Sohee")
-    QWEN_TTS_LANGUAGE = os.getenv("QWEN_TTS_LANGUAGE", "Korean")
-    QWEN_TTS_INSTRUCT = os.getenv("QWEN_TTS_INSTRUCT", "")  # 말투 지시 (예: "차분하고 또렷한 아나운서 톤")
-    QWEN_TTS_TIMEOUT_SEC = int(os.getenv("QWEN_TTS_TIMEOUT_SEC", "900"))
     VOICE_CULTURE = os.getenv("VOICE_CULTURE", "ko-KR")    # 이 언어의 설치된 음성을 고른다
     VOICE_NAME = os.getenv("VOICE_NAME", "")               # 비우면 VOICE_CULTURE의 첫 음성
     VOICE_RATE = int(os.getenv("VOICE_RATE", "0"))         # -10(느림) ~ 10(빠름)

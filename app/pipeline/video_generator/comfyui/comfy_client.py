@@ -39,6 +39,12 @@ class ComfyClient:
         except (requests.RequestException, ValueError):
             return False
 
+    def node_info(self, class_type, timeout=15):
+        """노드 정의 (입력 선택지 포함). 설치되지 않은 노드면 빈 dict."""
+        r = requests.get(f"{self.url}/object_info/{class_type}", timeout=timeout)
+        r.raise_for_status()
+        return r.json().get(class_type) or {}
+
     # 컷이 끝난 직후 ComfyUI가 큰 모델을 정리하느라 몇 분씩 응답하지 않을 때가 있다
     # (2026-10-23: 750KB /view 3분 23초, 다음 장면 /upload/image 300초 초과로 실패) → 시간 초과·연결 오류만 다시 시도
     transfer_attempts = 3

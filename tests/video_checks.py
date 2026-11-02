@@ -521,6 +521,155 @@ def run(check):
               r_early.status_code == 409 and r.status_code == 200 and guides == [-1, 0] and len(loads) == 2
               and new_info == (True, "done", "ltx25_flf2v", True, True)
               and _status(client, rid)["state"] == "clips_ready", (r.status_code, guides, new_info))
+        # 움직임 경로: 장면 하나만 경로 워크플로로, 같은 경로면 다시 안 만듦, 지우면 일반 I2V, 첫 프레임이 바뀌면 적용 안 됨
+        motion = {"width": 640, "height": 360, "tracks": [[{"x": 100, "y": 100}, {"x": 320, "y": 180}], [{"x": 10, "y": 20}]]}
+        motion_url = f"/api/rounds/{rid}/shots/s03/motion"
+        fake.missing_nodes.add("LTXVDrawTracks")
+        sub0 = len(fake.submitted)
+        r = client.post(motion_url, json=motion)
+        check("움직임 경로: ComfyUI-LTXVideo 노드가 없으면 409 + 설치 안내, 작업 없음",
+              r.status_code == 409 and "ComfyUI-LTXVideo" in r.get_json().get("error", "") and len(fake.submitted) == sub0,
+              (r.status_code, r.get_json()))
+        fake.missing_nodes.clear()
+        r_bad = client.post(motion_url, json={"width": 640, "height": 360, "tracks": [[{"x": 1, "y": 1}]]})
+        r_nan = client.post(motion_url, json={"width": 640, "height": 360, "tracks": [[{"x": "a", "y": 1}, {"x": 1, "y": 1}]]})
+        check("움직임 경로: 움직이는 경로가 없거나 좌표가 잘못되면 409",
+              r_bad.status_code == 409 and r_nan.status_code == 409 and len(fake.submitted) == sub0)
+        with app.app_context():
+            s03_before = next(x for x in ShotRender.query.filter_by(round_id=rid, shot_id="s03") if x.selected).id
+        r = client.post(motion_url, json=motion)
+        wf = fake.submitted[-1] if len(fake.submitted) > sub0 else {}
+        drawn = [n["inputs"] for n in wf.values() if n.get("class_type") == "LTXVDrawTracks"]
+        tracks = json.loads(drawn[0]["tracks"]) if drawn else []
+        frames = next((n["inputs"]["length"] for n in wf.values() if n.get("class_type") == "EmptyLTXVLatentVideo"), None)
+        width = next((n["inputs"]["value"] for k, n in wf.items() if k == "40"), None)
+        frames_val = next((n["inputs"]["value"] for k, n in wf.items() if k == "42"), None)
+        with app.app_context():
+            chosen = next(x for x in ShotRender.query.filter_by(round_id=rid, shot_id="s03") if x.selected)
+            info = (chosen.id != s03_before, chosen.workflow, chosen.status)
+        st03 = next(s for s in _status(client, rid)["shots"] if s["id"] == "s03")
+        check("움직임 경로 저장 → 그 장면만 경로 워크플로로 새 버전, 점은 프레임 수만큼·해상도에 맞춰 변환",
+              r.status_code == 200 and r.get_json()["regenerating"] and _kinds(fake.submitted[sub0:]) == ["video"]
+              and info == (True, "ltx25_motion", "done") and len(tracks) == 2 and frames == ["42", 0]
+              and len(tracks[0]) == frames_val and tracks[1][0] == tracks[1][-1]
+              and abs(tracks[0][-1]["x"] - 320 * width / 640) < 0.01 and st03["motion"] == {"tracks": 2, "stale": False},
+              (r.status_code, info, len(tracks), st03["motion"], _kinds(fake.submitted[sub0:]), frames_val, width))
+        sub0 = len(fake.submitted)
+        r = client.post(motion_url, json=motion)
+        check("같은 경로를 다시 보내면 아무것도 만들지 않음", r.status_code == 200 and not r.get_json()["changed"]
+              and len(fake.submitted) == sub0, r.get_json())
+        r = client.post(f"/api/rounds/{rid}/clips/regenerate", json={"shot_id": "s03", "note": ""})
+        check("경로가 있는 장면을 그냥 다시 뽑아도 경로 유지 (새 시드)",
+              r.status_code == 200 and any(n.get("class_type") == "LTXVDrawTracks" for n in fake.submitted[-1].values()))
+        r = client.post(motion_url, json={"tracks": None})
+        check("경로 지우기 → 일반 I2V로 새 버전",
+              r.status_code == 200 and r.get_json()["changed"]
+              and not any(n.get("class_type") == "LTXVDrawTracks" for n in fake.submitted[-1].values())
+              and next(s for s in _status(client, rid)["shots"] if s["id"] == "s03")["motion"] is None)
+        from app.pipeline import motion_tracks
+        # 프리셋: 찍은 점 → 팔 길이가 유지되는 경로, 여러 컷 뽑기, 이미지 승인 때도 저장한 컷 수만큼
+        elbow_points = {"base": [40, 90], "shoulder": [50, 70], "elbow": [40, 20], "wrist": [90, 40], "grip": [100, 70]}
+        grasp_points = {"base": [20, 90], "shoulder": [30, 70], "elbow": [40, 15], "wrist": [80, 40],
+                        "finger_l": [90, 75], "finger_r": [104, 75], "object_l": [94, 85], "object_r": [100, 85]}
+        r_e = client.post("/api/motion/preview", json={"preset": "elbow", "points": elbow_points, "params": {"angle": 30},
+                                                       "width": 128, "height": 96}).get_json()["tracks"]
+        lengths = [((a[0] - 40) ** 2 + (a[1] - 20) ** 2) ** 0.5 for a in r_e[1]]
+        r_g = client.post("/api/motion/preview", json={"preset": "grasp", "points": grasp_points, "width": 128, "height": 96})
+        grip = r_g.get_json()["tracks"]
+        fore = [((e[0] - w[0]) ** 2 + (e[1] - w[1]) ** 2) ** 0.5 for e, w in zip(grip[1], grip[3])]
+        presets = client.get("/api/motion/presets").get_json()
+        links_ok = all(max(max(l) for l in presets[n]["links"]) < len(t) for n, t in (("elbow", r_e), ("grasp", grip)))
+        check("프리셋 미리 보기: 관절 접기·집어 올리기 모두 팔 길이가 그대로, 물체는 잡은 뒤에만 올라감, 뼈대 번호가 경로 안에 있음",
+              max(lengths) - min(lengths) < 0.2 and max(fore) - min(fore) < 0.2 and links_ok
+              and grip[7][0] == grip[7][int(motion_tracks.PRESET_POINTS * 0.45)] and grip[7][-1][1] < grip[7][0][1],
+              (max(lengths) - min(lengths), max(fore) - min(fore), links_ok))
+        big = dict(grasp_points, object_l=[60, 85], object_r=[120, 85])
+        r_big = client.post("/api/motion/preview", json={"preset": "grasp", "points": big, "width": 128, "height": 96})
+        missing = {k: v for k, v in elbow_points.items() if k != "wrist"}
+        r_miss = client.post("/api/motion/preview", json={"preset": "elbow", "points": missing, "width": 128, "height": 96})
+        far = dict(grasp_points, shoulder=[2, 94], elbow=[3, 90], wrist=[5, 92])
+        r_far = client.post("/api/motion/preview", json={"preset": "grasp", "points": far, "params": {"lift": 40}, "width": 128, "height": 96})
+        check("프리셋 오류 안내: 물체가 집게보다 큼, 점 빠짐, 팔이 안 닿음",
+              r_big.status_code == 400 and "집게 폭보다" in r_big.get_json()["error"]
+              and r_miss.status_code == 400 and "손목" in r_miss.get_json()["error"]
+              and r_far.status_code == 400 and "닿지" in r_far.get_json()["error"],
+              (r_big.status_code, r_miss.status_code, r_far.status_code))
+        sub0 = len(fake.submitted)
+        with app.app_context():
+            before = ShotRender.query.filter_by(round_id=rid, shot_id="s03").count()
+        r = client.post(motion_url, json={"preset": "elbow", "points": elbow_points, "params": {"angle": 30},
+                                          "width": 128, "height": 96, "takes": 2})
+        vids = [w for w in fake.submitted[sub0:] if any(n.get("class_type") == "LTXVDrawTracks" for n in w.values())]
+        seeds = {w["29"]["inputs"]["noise_seed"] for w in vids}
+        with app.app_context():
+            after = ShotRender.query.filter_by(round_id=rid, shot_id="s03").count()
+        page = client.get(f"/session/{sid}").get_data(as_text=True)
+        check("프리셋 저장 + 컷 2개 → 경로 워크플로 2번, 시드가 다르고 새 버전 2개, 화면에 움직임 지정·경로 적용 표시",
+              r.status_code == 200 and len(vids) == 2 and len(seeds) == 2 and after - before == 2
+              and "motion-panel" in page and "경로 적용 중" in page, (r.status_code, len(vids), seeds, after - before))
+        sub0 = len(fake.submitted)
+        r = client.post(f"/api/rounds/{rid}/clips/regenerate", json={"shot_id": "s03", "note": ""})
+        again = [w["29"]["inputs"]["noise_seed"] for w in fake.submitted[sub0:] if "29" in w]
+        check("여러 컷 뒤 다시 뽑기는 하나만 만들고 앞의 시드와 겹치지 않음",
+              r.status_code == 200 and len(again) == 1 and again[0] not in seeds, (again, seeds))
+        # 문장 → 동작 계획 → 관절 키프레임 경로
+        from app.pipeline import llm, motion_plan
+        keyframes = [{"t": 0.5, "shoulder": 10, "elbow": 40, "wrist": 0}, {"t": 0.8, "shoulder": 10, "elbow": 40, "wrist": 30},
+                     {"t": 0.9, "shoulder": 0, "elbow": 20, "wrist": -30}]
+        joint_points = {k: elbow_points[k] for k in elbow_points}
+        r_j = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "params": {"keyframes": keyframes},
+                                                       "width": 400, "height": 300})
+        jt = r_j.get_json().get("tracks", [])
+        d = lambda a, b: ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+        upper = [d(jt[1][0], [50, 70])] + [d(e, [50, 70]) for e in jt[1]]
+        fore_len = [d(e, w) for e, w in zip(jt[1], jt[3])]
+        hand_len = [d(w, g) for w, g in zip(jt[3], jt[5])]
+        check("관절 키프레임: 어깨·팔꿈치·손목을 돌려도 모든 팔 길이 유지, 올리는 각도면 손목이 위로, 마지막 시점은 1.0",
+              r_j.status_code == 200 and max(upper) - min(upper) < 0.2 and max(fore_len) - min(fore_len) < 0.2
+              and max(hand_len) - min(hand_len) < 0.2 and min(p[1] for p in jt[3]) < jt[3][0][1]
+              and motion_tracks.clean_keyframes(keyframes)[-1]["t"] == 1.0,
+              (r_j.status_code, max(upper) - min(upper), max(fore_len) - min(fore_len), max(hand_len) - min(hand_len)))
+        mirrored = {k: [128 - x, y] for k, (x, y) in joint_points.items()}
+        mt, _v = motion_tracks.build_preset("joints", mirrored, {"keyframes": [{"t": 1, "elbow": 30}]}, 128, 96)
+        check("왼쪽으로 뻗은 팔도 양수 각도면 위로", mt[3][-1][1] < mt[3][0][1], mt[3][-1])
+        r_out = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "width": 128, "height": 96,
+                                                         "params": {"keyframes": [{"t": 1, "shoulder": 90, "elbow": 90}]}})
+        r_back = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "width": 128, "height": 96,
+                                                          "params": {"keyframes": [{"t": 0.5, "elbow": 10}, {"t": 0.4, "elbow": 20}]}})
+        check("관절 키프레임 오류 안내: 화면 밖, 시점 역전",
+              r_out.status_code == 400 and "화면 밖" in r_out.get_json()["error"]
+              and r_back.status_code == 400 and "차례로" in r_back.get_json()["error"], (r_out.status_code, r_back.status_code))
+        real_strong, answers = llm.generate_strong, {}
+
+        def fake_strong(system, user, config, max_tokens=0, fallback_config=None):
+            return answers.get(user, "모르겠습니다"), "fake", ""
+        llm.generate_strong = fake_strong
+        try:
+            answers.update({
+                "올려": '설명 {"action": "joints", "keyframes": [{"t": 0.6, "elbow": 500}], "summary": "올립니다."} 끝',
+                "집어": '{"action": "grasp", "lift": 99, "summary": "집습니다."}',
+                "넣어": '{"action": "unsupported", "reason": "넣기는 안 됩니다."}',
+                "역전": '{"action": "joints", "keyframes": [{"t": 0.9, "elbow": 1}, {"t": 0.2, "elbow": 2}]}'})
+            plan = lambda t: client.post("/api/motion/plan", json={"text": t})
+            up, grab, no, bad, junk, empty = plan("올려"), plan("집어"), plan("넣어"), plan("역전"), plan("아무말"), plan(" ")
+            check("문장 → 계획: JSON만 골라 읽고 각도·높이는 범위 안으로, 불가능·잘못된 계획·빈 문장은 안내",
+                  up.status_code == 200 and up.get_json()["plan"]["keyframes"] == [{"t": 1.0, "shoulder": 0.0, "elbow": 90.0, "wrist": 0.0}]
+                  and grab.get_json()["plan"]["lift"] == 40 and no.get_json()["plan"]["action"] == "unsupported"
+                  and bad.status_code == 422 and junk.status_code == 422 and empty.status_code == 422,
+                  (up.get_json(), bad.status_code, junk.status_code, empty.status_code))
+        finally:
+            llm.generate_strong = real_strong
+        client.post(motion_url, json={"tracks": None})
+        from app.pipeline import storyboard_model as sbm_
+        sb_ = {"style": "", "negative": "", "defaults": {"width": 640, "height": 384, "fps": 24, "seed": 1}}
+        drawn_on = {"id": "s", "prompt": "p", "duration": 1.0, "image": "a.png",
+                    "motion": motion_tracks.normalize(motion, "a.png")}
+        cfg_ = dict(app.config, COMFYUI_WORKFLOW_MOTION="ltx25_motion")
+        check("첫 프레임을 다시 뽑으면 경로를 쓰지 않음, 끝 프레임 고정이 경로보다 우선, 경로가 바뀌면 장면 서명이 달라짐",
+              sbm_.resolve_params(sb_, drawn_on, cfg_)["workflow"] == "ltx25_motion"
+              and sbm_.resolve_params(sb_, {**drawn_on, "image": "b.png"}, cfg_)["tracks"] is None
+              and sbm_.resolve_params(sb_, {**drawn_on, "end_image": "e.png"}, cfg_)["tracks"] is None
+              and sbm_.shot_signature(sb_, drawn_on) != sbm_.shot_signature(sb_, {**drawn_on, "motion": None}))
         # 모호한 의견은 422로 방향을 묻고 아무것도 만들지 않는다
         sub0 = len(fake.submitted)
         r = client.post(f"/api/rounds/{rid}/clips/regenerate", json={"shot_id": "s03", "note": "로봇의 그리퍼 모양을 바꿔"})

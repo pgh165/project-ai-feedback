@@ -817,3 +817,27 @@ pre.diff .hunk { color: var(--faint); display: block; }
 .tl-handle { flex: none; width: 7px; align-self: stretch; cursor: ew-resize; background: rgba(255, 255, 255, .35); }
 .tl-empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: .5rem; font-size: .72rem; color: var(--faint); }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #E5484D; pointer-events: none; }
+
+/* 움직임 지정 */
+.motion-panel { grid-column: 1 / -1; border-top: 1px solid var(--line-soft); padding-top: .6rem; }
+.motion-panel summary { cursor: pointer; font-size: .9rem; font-weight: 500; }
+.motion-badge { margin-left: .4rem; padding: .1rem .45rem; border-radius: var(--r-sm); background: var(--good-soft); color: var(--good); font-size: .75rem; font-weight: 400; }
+.motion-badge.is-stale { background: var(--wait-soft); color: var(--wait); }
+.motion-editor { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 1rem; margin-top: .6rem; }
+.motion-stage { position: relative; align-self: start; background: var(--stage); border-radius: var(--r-md); overflow: hidden; line-height: 0; }
+.motion-image { width: 100%; height: auto; display: block; }
+.motion-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+.motion-side { display: flex; flex-direction: column; gap: .55rem; font-size: .85rem; min-width: 0; }
+.motion-param { display: block; }
+.motion-guide { margin: 0; color: var(--accent-ink); }
+.motion-message { margin: 0; color: var(--bad); }
+.motion-message:empty { display: none; }
+.motion-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+@media (max-width: 760px) { .motion-editor { grid-template-columns: minmax(0, 1fr); } }
+
+.motion-summary { margin: 0; color: var(--good); }
+.motion-summary:empty { display: none; }
+.motion-frames { width: 100%; font-size: .78rem; }
+.motion-frames th { font-weight: 500; color: var(--muted); padding: 0 .15rem; }
+.motion-frames td { padding: .1rem .15rem; }
+.motion-frames input { min-width: 0; padding: .1rem .25rem; }
