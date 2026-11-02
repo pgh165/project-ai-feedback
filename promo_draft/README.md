@@ -17,7 +17,7 @@ cd D:\capstone\project_ai_feedback\promo_draft
 이 도구는 노드 그래프를 만들지 않는다. 직접 만든/검증한 워크플로를 템플릿으로 쓴다.
 1. ComfyUI에서 워크플로를 열고 정상 동작을 확인한다.
 2. 메뉴 → **Export (API)** (Workflow → Export (API))로 저장한다. (일반 Save가 아님)
-3. 파일을 `workflows/`에 넣는다. 지금 쓰는 것: `ltx25_t2v.json`, `ltx25_i2v.json`, `ltx25_flf2v.json`(첫·마지막 프레임 고정), `zimage_t2i.json`(첫 프레임 이미지). `video_ltx2_5_*.json`·`image_z_image_turbo.json`은 원본 템플릿이다.
+3. 파일을 `workflows/`에 넣는다. 지금 쓰는 것: `ltx25_t2v.json`, `ltx25_i2v.json`, `ltx25_flf2v.json`(첫·마지막 프레임 고정), `ltx25_motion.json`(움직임 경로, 웹 앱 전용), `zimage_t2i.json`(첫 프레임 이미지). `video_ltx2_5_*.json`·`image_z_image_turbo.json`은 원본 템플릿이다.
 4. `python run.py --scan-workflows`로 프롬프트/시드/해상도 등 후보 노드를 확인하고, `workflows/mapping.example.yaml`을 참고해 `workflows/mapping.yaml`을 작성한다.
 
 ## 실행 예시

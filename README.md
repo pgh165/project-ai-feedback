@@ -39,8 +39,9 @@
  ┌────────────────┐   ┌───────────────────────┐   ┌──────────────────┐   ┌──────────────────┐
  │ ① 기획          │ → │ ② 제작                 │ → │ ③ 확인            │ → │ ④ 공개            │
  │ 설명·장면·내레이션│   │ 첫 프레임 이미지 → 확인 │   │ 러프컷 + 내레이션  │   │ YouTube 업로드    │
- │ (콘티 엑셀/완성  │   │ → 컷 영상 → 확인       │   │ + 배경음악 + 로고  │   │ + 한국어 자막 트랙 │
- │  영상 불러오기)  │   │ (Z-Image + LTX-2.5)   │   │ (타임라인 편집)    │   │                  │
+ │ (콘티 엑셀/완성  │   │ → (움직임 지정, 선택)  │   │ + 배경음악 + 로고  │   │ + 한국어 자막 트랙 │
+ │  영상 불러오기)  │   │ → 컷 영상 → 확인       │   │ (타임라인 편집)    │   │                  │
+ │                │   │ (Z-Image + LTX-2.5)   │   │                  │   │                  │
  └────────────────┘   └───────────────────────┘   └──────────────────┘   └────────┬─────────┘
          ▲                                                                          │
          │                                                                          ▼
@@ -72,6 +73,9 @@ flowchart TB
         direction LR
         sb["storyboard_model<br/>스토리보드"] --> img["첫 프레임 이미지<br/>(Z-Image Turbo)"] --> clip["컷 영상<br/>(LTX-2.5 I2V)"]
         fb["feedback_target<br/>장면 피드백 · 길이 요청"] -.-> img
+        img --> motion["움직임 지정 (선택)<br/>관절 점 찍기 · 동작 고르기<br/>뼈대 미리 보기"]
+        say["motion_plan<br/>동작 문장 → 관절 각도<br/>(Gemma)"] -.-> motion
+        motion --> tracks["motion_tracks<br/>팔 길이를 유지하는 경로 계산"] --> mclip["컷 영상<br/>(LTX-2.5 Motion Control)"]
     end
 
     subgraph s3["③ 확인"]
@@ -269,7 +273,7 @@ project_ai_feedback/
 ├─ tests/                      fake_comfyui.py, video_checks.py, custom_video_checks.py (run_check.py가 호출)
 ├─ promo_draft/                학과 홍보영상 초안 CLI (run.py + storyboard_*.yaml, 결과는 outputs/)
 │  └─ workflows/               ComfyUI Export(API) 워크플로 JSON + mapping.yaml — 앱도 여기서 읽음
-│                              (ltx25_t2v · ltx25_i2v · ltx25_flf2v · zimage_t2i)
+│                              (ltx25_t2v · ltx25_i2v · ltx25_flf2v · ltx25_motion · zimage_t2i)
 ├─ instance/                   pipeline.db, 영상·로고·토큰 (git 제외)
 ├─ docs/                       feedback_loop.html (피드백 루프 설명 그림)
 ├─ _archive/                   쓰지 않는 예전 파일 보관 (git 제외, 지워도 동작에 영향 없음)
