@@ -54,28 +54,28 @@ def run_round(client, app, sid, approve_top=4):
 
 
 def _voice_checks(client, app, sid, base):
-    """배경음악·음성 탭: 목소리(프로젝트 공통)·말투·내레이션 크기/빠르기 저장, 목소리가 바뀌면 음성만 다시 합성."""
+    """배경음악·음성 탭: 목소리(프로젝트 공통)·내레이션 크기/빠르기 저장, 목소리가 바뀌면 음성만 다시 합성."""
     from app.pipeline import narration, orchestrator, voice
 
     res = client.post(f"{base}/decorate", data={
-        "voice_settings": "1", "voice_enabled": "on", "voice_speaker": "qwen:sohee", "voice_tone": "anchor",
+        "voice_settings": "1", "voice_enabled": "on", "voice_speaker": "supertonic:M1",
         "narration_settings": "1", "narration_gain": "130", "narration_tempo": "90"})
     with app.app_context():
         session = db.session.get(PipelineSession, sid)
         saved = voice.load(session)
         plan = orchestrator.edit_plan.round_plan(session.current_round)
-        check("음성 저장 → 목소리·말투(프로젝트) + 크기·빠르기(이 버전), 확인 탭으로 돌아옴",
-              saved["speaker"] == "qwen:sohee" and saved["tone"] == "anchor" and res.headers["Location"].endswith("#confirm")
+        check("음성 저장 → 목소리(프로젝트) + 크기·빠르기(이 버전), 확인 탭으로 돌아옴",
+              saved["speaker"] == "supertonic:M1" and res.headers["Location"].endswith("#confirm")
               and plan["narration_gain"] == 1.3 and plan["narration_tempo"] == 0.9, (saved, res.headers.get("Location")))
         cfg = voice.apply(app.config, saved)
         edge = voice.apply(app.config, {"speaker": "edge:ko-KR-InJoonNeural"})
         check("목소리 설정 → 엔진·목소리 덮어쓰기 + 음성 캐시 키가 달라짐(다시 합성)",
-              cfg["VOICE_ADAPTER"] == "qwen" and cfg["QWEN_TTS_SPEAKER"] == "sohee" and "anchor" in cfg["QWEN_TTS_INSTRUCT"]
+              cfg["VOICE_ADAPTER"] == "supertonic" and cfg["SUPERTONIC_VOICE"] == "M1"
               and edge["VOICE_ADAPTER"] == "edge" and edge["EDGE_TTS_VOICE"] == "ko-KR-InJoonNeural"
               and narration._cache_key("문장", edge) != narration._cache_key("문장", dict(edge, EDGE_TTS_VOICE="ko-KR-SunHiNeural"))
               and voice.effective_speaker(dict(app.config, VOICE_ADAPTER="edge"), {}) == "edge:ko-KR-SunHiNeural")
-        bad = voice.normalize({"speaker": "eric", "tone": "custom", "instruct": "  "})
-        check("방언 화자·빈 직접 말투는 기본값으로", bad["speaker"] == "" and bad["tone"] == "")
+        old = [voice.normalize({"speaker": s, "tone": "anchor", "instruct": "x"}) for s in ("sohee", "qwen:sohee")]
+        check("예전 Qwen 저장값은 기본 목소리로", all(o == voice.DEFAULTS for o in old), old)
         rnd = session.current_round
         sb = {"shots": [{"id": "s01", "narration": "첫 장면"}]}
         orchestrator._record_narration(rnd, sb, {}, orchestrator._VOICE_OFF, {})

@@ -792,10 +792,9 @@ def _sound_view(session, round_obj, plan, storyboard, music):
     if has_narration:
         summary.append(voice.describe(cfg, settings))
         summary += [line for line in edit_plan.describe(plan, storyboard) if line.startswith("내레이션")]
-    return {"voice": settings, "speakers": voice.SPEAKERS, "tones": voice.TONES,
+    return {"voice": settings, "speakers": voice.SPEAKERS,
             "speaker": voice.effective_speaker(cfg, settings), "adapter": adapter,
             "can_choose": adapter != "none", "has_narration": has_narration,
-            "engine": voice.engine_of(cfg, settings),
             "imported": round_obj.adapter_used == "import" and not has_narration,  # 소리 있는 영상 (자막만)
             "preview_url": url_for("session.voice_preview", session_id=session.id),
             "summary": summary}
@@ -858,6 +857,7 @@ def _scene_cards(round_obj):
                       "render": None if image_step else renders.get(shot_id),
                       "image": images.get(shot_id), "comments": comments,
                       "notes": shot.get("notes") or [],
+                      "motion": shot.get("motion"),
                       "prompt_fixed": shot.get("prompt_fixed") or "",  # 의견대로 고쳐 써서 실제로 모델에 넣은 묘사
                       "image_prompt_fixed": shot.get("image_prompt_fixed") or "",  # 첫 프레임(동작 시작 전) 묘사
                       "versions": [r for r in round_obj.shot_renders
@@ -1012,6 +1012,44 @@ def clips_regenerate(round_id):
         return _error("shot_id가 필요합니다.", 400)
     return _vague_check(body) or _staged_action(round_id, orchestrator.regenerate_clip, body["shot_id"],
                                                 body.get("note", ""))
+
+
+@bp.route("/api/rounds/<int:round_id>/shots/<shot_id>/motion", methods=["POST"])
+def shot_motion(round_id, shot_id):
+    """장면 움직임 경로 저장 — body {"width", "height", "tracks": [[{x, y}, ...], ...]} 또는 프리셋
+    {"width", "height", "preset", "points", "params"}, 선택 "takes"(컷 수). 경로·프리셋이 모두 없으면 지운다."""
+    body = request.get_json(silent=True) or {}
+    round_obj = _get_round(round_id)
+    has_motion = body.get("tracks") is not None or body.get("preset")
+    try:
+        takes = int(body.get("takes") or 1)
+        result = orchestrator.set_shot_motion(round_obj, shot_id, body if has_motion else None,
+                                              current_app.config, takes=takes)
+    except (TypeError, ValueError):
+        return _error("컷 수(takes)가 숫자가 아닙니다.", 400)
+    except PipelineError as exc:
+        return _error(str(exc), 409)
+    return jsonify(state=round_obj.status, **result)
+
+
+@bp.route("/api/motion/presets")
+def motion_presets():
+    from ..pipeline import motion_tracks
+    return jsonify(motion_tracks.PRESETS)
+
+
+@bp.route("/api/motion/preview", methods=["POST"])
+def motion_preview():
+    """프리셋 + 찍은 점 → 경로 (저장하지 않음). 화면이 뼈대 미리 보기를 그릴 때 쓴다."""
+    from ..pipeline import motion_tracks
+
+    body = request.get_json(silent=True) or {}
+    try:
+        tracks, _values = motion_tracks.build_preset(body.get("preset"), body.get("points"), body.get("params"),
+                                                     body.get("width") or 0, body.get("height") or 0)
+    except (TypeError, ValueError) as exc:
+        return _error(str(exc), 400)
+    return jsonify(tracks=tracks)
 
 
 @bp.route("/api/rounds/<int:round_id>/notes/delete", methods=["POST"])
@@ -1274,9 +1312,7 @@ def decorate(session_id):
 
     if request.form.get("voice_settings"):  # 목소리 (프로젝트 공통)
         voice.save(session, {"enabled": request.form.get("voice_enabled") == "on",
-                             "speaker": request.form.get("voice_speaker", ""),
-                             "tone": request.form.get("voice_tone", ""),
-                             "instruct": request.form.get("voice_instruct", "")})
+                             "speaker": request.form.get("voice_speaker", "")})
         db.session.commit()
 
     try:
@@ -1322,14 +1358,13 @@ def _preview_text(round_obj):
 
 @bp.route("/session/<int:session_id>/voice/preview", methods=["POST"])
 def voice_preview(session_id):
-    """고른 목소리·말투로 한 문장만 합성해 들려준다 (저장하지 않음). 같은 설정·문장이면 파일을 다시 쓴다."""
+    """고른 목소리로 한 문장만 합성해 들려준다 (저장하지 않음). 같은 설정·문장이면 파일을 다시 쓴다."""
     from ..pipeline import narration
     from ..pipeline.overlay import asset_dir
 
     session = _get_session(session_id)
     data = request.get_json(silent=True) or request.form
-    settings = voice.normalize({"enabled": True, "speaker": data.get("speaker", ""),
-                                "tone": data.get("tone", ""), "instruct": data.get("instruct", "")})
+    settings = voice.normalize({"enabled": True, "speaker": data.get("speaker", "")})
     cfg = voice.apply(current_app.config, settings)
     ok, reason = narration.is_available(cfg)
     if not ok:

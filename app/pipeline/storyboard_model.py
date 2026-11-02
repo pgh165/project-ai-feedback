@@ -12,6 +12,7 @@
 import json
 import math
 
+from . import motion_tracks
 from .prompt_builder import (extract_narration, extract_shot_durations, extract_shot_seeds, extract_shots, extract_style,
                              extract_subtitles)
 
@@ -156,6 +157,10 @@ def resolve_params(storyboard, shot, config):
                 else config["COMFYUI_WORKFLOW_T2V"])
     if shot.get("image") and shot.get("end_image"):  # 처음·끝 프레임 고정 ('이 순간을 끝으로 다시 만들기')
         workflow = config.get("COMFYUI_WORKFLOW_FLF", "ltx25_flf2v")
+    # 경로를 그린 첫 프레임이면 경로대로 (끝 프레임을 고정한 다시 만들기는 끝 프레임이 우선)
+    motion = motion_tracks.is_active(shot) and not shot.get("end_image")
+    if motion:
+        workflow = config.get("COMFYUI_WORKFLOW_MOTION", "ltx25_motion")
     return {
         "prompt": final_prompt(storyboard, shot, config.get("STORYBOARD_APPEND_NOTES", True)),
         "image_prompt": final_prompt(storyboard, shot, config.get("STORYBOARD_APPEND_NOTES", True), first_frame=True),
@@ -165,11 +170,13 @@ def resolve_params(storyboard, shot, config):
         "workflow": workflow, "duration": duration, "image": shot.get("image"),
         "end_image": shot.get("end_image") if shot.get("image") else None,
         "image_first": image_first,
+        "tracks": motion_tracks.render(shot["motion"], width, height, frames) if motion else None,
     }
 
 
 def shot_signature(storyboard, shot):
-    """라운드 간 '같은 장면인가' 비교용 — 프롬프트·스타일·해상도·길이가 같으면 같은 장면."""
+    """라운드 간 '같은 장면인가' 비교용 — 프롬프트·스타일·해상도·길이·움직임 경로가 같으면 같은 장면."""
     d = storyboard["defaults"]
     return (shot["prompt"].strip(), storyboard["style"].strip(), float(shot["duration"]),
-            int(d["width"]), int(d["height"]), int(d["fps"]), shot.get("image") or "")
+            int(d["width"]), int(d["height"]), int(d["fps"]), shot.get("image") or "",
+            motion_tracks.digest(shot["motion"]) if shot.get("motion") else "")

@@ -143,6 +143,9 @@ flowchart TB
   **내레이션이 1배속으로 들어가는 길이**를 재서 맞춤(앞뒤 잘라 냄·디졸브 겹침·말 시작 지연 포함)
 - **이 순간을 끝으로 다시 만들기** — 컷에서 고른 순간을 마지막 프레임으로 고정해 같은 길이로 다시 만듦
   (LTX-2.5 FLF2V). 요청한 동작 뒤에 엉뚱한 동작이 붙을 때 씀
+- **움직임 지정** — 첫 프레임에 로봇팔 관절·물체를 차례로 찍고 동작("관절 접기", "집어 올리기")을 고르면 경로를 계산해
+  그 경로대로 컷을 만듦 (LTX Motion Control IC-LoRA). 생성 전에 뼈대 미리 보기로 확인하고, 시드를 바꿔 컷을 1~4개 뽑아 고를 수 있음.
+  순기구학·역기구학으로 계산해 팔 길이가 유지되고, 물체가 집게보다 크거나 팔이 닿지 않으면 생성 전에 안내함
 - **의견 관리** — 무엇으로 바꿀지 없는 모호한 의견은 방향을 먼저 묻고, 지난 장면 의견은 지울 수 있음
 - **생성 중지·재시도** — 대기 작업은 취소, 실행 중 장면은 ComfyUI `/interrupt`. 만들어진 장면은 남고 실패한 장면만 다시
 - **상용 API 재생성** — 품질이 부족한 장면만, 사람이 비용을 확인하고 누를 때만 Runway로 (예산 상한 검사)
@@ -181,7 +184,7 @@ flowchart TB
 | 백엔드 | Python 3.11, Flask 3.x, SQLAlchemy (SQLite) |
 | ML | sentence-transformers, scikit-learn, hdbscan, transformers |
 | 영상·이미지·음악·글 | ComfyUI (LTX-2.5, Z-Image Turbo, Gemma, MiniMax Music 3), ffmpeg |
-| 음성 | edge-tts, Supertonic-3, (선택) Qwen3-TTS, Windows SAPI |
+| 음성 | edge-tts, Supertonic-3, Windows SAPI |
 | UI | Bootstrap 5, Chart.js |
 
 | 역할 | 모델 | 라이선스 | 실행 위치 |
@@ -221,10 +224,12 @@ copy .env.example .env    # 값 채우기 (키가 없어도 동작)
 
 - 실제 영상·이미지·음악·번역에는 ComfyUI 서버(`COMFYUI_URL`, 기본 `http://127.0.0.1:8188`)가 필요합니다.
   꺼져 있으면 영상은 mock 어댑터로 대체되고 화면에 "mock으로 대체됨"이 표시됩니다.
+- 움직임 지정에는 ComfyUI에 [ComfyUI-LTXVideo](https://github.com/Lightricks/ComfyUI-LTXVideo) 노드와
+  [`ltx-2.3-22b-ic-lora-motion-track-control-ref0.5`](https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control) LoRA가 필요합니다.
+  없으면 경로를 저장할 때 설치 안내가 나오고, 움직임 지정을 쓰지 않는 장면은 그대로 만들어집니다.
+  노드의 패키지는 ComfyUI를 끈 뒤 설치하세요. 켠 채로 설치하면 파일 잠금 때문에 패키지가 깨질 수 있습니다.
 - 러프컷·컷 감지는 ffmpeg를 씁니다(`FFMPEG_PATH` → PATH → imageio-ffmpeg 순으로 찾음).
 - `run.py`는 자동 재시작이 없습니다. **코드를 고친 뒤에는 서버를 다시 켜야** 반영됩니다.
-- Qwen3-TTS·번역 작업자를 쓰려면 `venv_tts` 가상환경이 필요합니다(선택).
-
 ## 6. 프로젝트 구조
 
 ```
@@ -237,7 +242,7 @@ project_ai_feedback/
 │  │  ├─ clusterer/            임베딩, 토픽 태깅, 계층적 군집화, 우선순위
 │  │  ├─ video_generator/      어댑터: comfyui / local / mock / runway
 │  │  │  └─ comfyui/           ComfyUI 클라이언트, 워크플로 주입, rough_cut.py(러프컷·내레이션 트랙·로고·음악·자막 .srt)
-│  │  ├─ narration/            내레이션 TTS (edge/Supertonic/Qwen 작업자, SAPI) + 장면 길이에 맞추기
+│  │  ├─ narration/            내레이션 TTS (edge/Supertonic 작업자, SAPI) + 장면 길이에 맞추기
 │  │  ├─ orchestrator.py       상태 머신, 단계 계산, 생성 흐름, 부분 재생성, 기획 변경, 데모 재생
 │  │  ├─ jobs.py               GPU 작업 큐 (워커 스레드 1개)
 │  │  ├─ storyboard_model.py   스토리보드 스키마, 타임스탬프 → 장면 매핑
@@ -245,7 +250,8 @@ project_ai_feedback/
 │  │  ├─ edit_plan.py          편집 설정 + 의견 → 편집 제안
 │  │  ├─ overlay.py            로고 합성, 자막 .srt, 로고 시각 계산
 │  │  ├─ bgm.py music.py       배경음악 설정·곡 생성(ComfyUI)·고른 구간 고르기
-│  │  ├─ voice.py              내레이션 목소리·말투 (프로젝트 공통)
+│  │  ├─ voice.py              내레이션 목소리 (프로젝트 공통)
+│  │  ├─ motion_tracks.py      움직임 경로: 로봇팔 프리셋 계산(순·역기구학), 저장 형식, 생성 해상도로 변환
 │  │  ├─ ko_en.py draft_fill.py scene_refine.py   한국어 입력 → 영어, AI로 채우기, 장면 다듬기
 │  │  ├─ comfy_text.py translate.py   Gemma 글 생성(이미지 입력), 화면용 영→한 번역 캐시
 │  │  ├─ storyboard_import.py video_import.py   콘티 엑셀 / 완성 영상 불러오기
@@ -276,7 +282,7 @@ project_ai_feedback/
 └─ VIDEO_PIPELINE_INTEGRATION.md   영상 파이프라인 통합 설계서
 ```
 
-가상환경: `venv`(앱), `venv_tts2`(edge-tts·Supertonic), `venv_tts`(Qwen3-TTS·번역 작업자, 선택).
+가상환경: `venv`(앱), `venv_tts2`(edge-tts·Supertonic).
 
 ### 주요 DB 테이블
 
@@ -379,7 +385,8 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 
 ### 장면 생성 과정 (이미지 먼저 + 단계별 확인)
 1. Z-Image Turbo로 장면 첫 프레임 이미지 생성 → 사람이 확인, 필요하면 피드백 문장과 함께 "다시 뽑기"(시드 +101)
-2. 승인된 이미지를 LTX-2.5 I2V로 움직여 컷 생성 → 확인, "다시 만들기"(이전 컷은 버전으로 남아 고를 수 있음)
+2. 승인된 이미지를 LTX-2.5 I2V로 움직여 컷 생성 → 확인, "다시 만들기"(이전 컷은 버전으로 남아 고를 수 있음).
+   움직임 경로를 지정한 장면만 `ltx25_motion` 워크플로로 만듦. 경로는 그린 첫 프레임에 묶여 있어, 첫 프레임을 다시 뽑으면 적용되지 않고 화면에 표시됨
 3. "다음: 확인 단계로"를 누르면 선택된 컷을 정규화·다듬어 디졸브로 잇고, 내레이션·배경음악·로고를 얹고 자막 `.srt`를 만듦
 
 ### 설계 결정
@@ -435,6 +442,7 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI 서버 |
 | `COMFYUI_IMAGE_FIRST` | `false` | 첫 프레임 이미지 먼저 생성 후 I2V (권장 `true`) |
 | `COMFYUI_STAGED_REVIEW` | `false` | 이미지 → 컷 → 러프컷 단계별 확인 (권장 `true`) |
+| `COMFYUI_WORKFLOW_MOTION` | `ltx25_motion` | 움직임 경로가 있는 장면에 쓰는 워크플로 |
 | `STORYBOARD_SHOT_SECONDS` / `WIDTH` / `HEIGHT` / `FPS` | `5` / `576` / `960` / `24` | 장면 기본값 (프로젝트의 화면 비율에 맞게 배치) |
 | `SHOT_MAX_SECONDS` | `8` | 의견으로 장면을 늘릴 때 최대 길이 |
 | `CLIP_TRIM_HEAD_SEC` / `CLIP_TRIM_TAIL_SEC` | `0.15` / `0.1` | 러프컷에서 AI 컷 앞뒤를 잘라 내는 길이 |
@@ -497,4 +505,6 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 - Runway 어댑터는 테스트 더블로만 검증했고 실제 API 호출은 검증하지 않음
 - Google 감사를 받지 않은 프로젝트로 올린 영상은 YouTube가 비공개로 고정할 수 있음. 자막 업로드에는 `youtube.force-ssl` 권한이 필요해
   그 전에 연결한 계정은 다시 연결해야 함
+- 움직임 지정은 2D 계산이라 옆에서 본 로봇팔에 맞음 (카메라 쪽으로 뻗는 팔은 어긋남). 집어 올리기는 시드에 따라 물체가 따라오지 않을 수 있어
+  여러 컷을 뽑아 고르며, 관절 형태 변화와 미세한 끊김은 모델 쪽 한계로 남음
 - 컬럼 제거·타입 변경 시에는 `instance/pipeline.db`를 삭제하고 다시 만들어야 함

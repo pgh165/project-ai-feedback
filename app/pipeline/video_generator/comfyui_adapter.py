@@ -3,10 +3,13 @@
 [오픈소스] ComfyUI 서버 + LTX-2.5 워크플로. 워크플로 JSON/mapping.yaml은
 `COMFYUI_WORKFLOWS_DIR`(promo_draft 공유)에서 읽기만 하고 수정하지 않는다.
 """
+import json
 import subprocess
 import threading
 import time
 from pathlib import Path
+
+import requests
 
 from ..storyboard_model import resolve_params
 from .base import BaseVideoGeneratorAdapter, ShotResult
@@ -15,6 +18,7 @@ from .comfyui.comfy_client import ComfyClient, ComfyError
 from .mock_adapter import build_storyboard
 
 _gpu_lock = threading.Lock()  # GPU 작업은 동시에 하나만 (16GB VRAM)
+_MOTION_NODES = ("LTXICLoRALoaderModelOnly", "LTXVDrawTracks", "LTXAddVideoICLoRAGuide")  # ComfyUI-LTXVideo가 주는 노드
 
 
 class _VramSampler:
@@ -70,6 +74,25 @@ class ComfyUIAdapter(BaseVideoGeneratorAdapter):
 
     def unavailable_reason(self):
         return self._reason
+
+    def motion_problem(self):
+        """움직임 경로를 쓸 수 없는 이유 (ComfyUI-LTXVideo 노드·LoRA·워크플로). 쓸 수 있으면 ''."""
+        try:
+            template, _mapping = workflow.load_template(self.config, self.config["COMFYUI_WORKFLOW_MOTION"])
+            for node in template.values():
+                if node["class_type"] not in _MOTION_NODES:
+                    continue
+                info = self.client.node_info(node["class_type"])
+                if not info:
+                    return f"ComfyUI에 {node['class_type']} 노드가 없습니다 (ComfyUI-LTXVideo 설치 필요)."
+                lora = node["inputs"].get("lora_name")
+                if lora and lora not in json.dumps(info.get("input", {})):
+                    return f"ComfyUI models/loras에 {lora}가 없습니다."
+        except (FileNotFoundError, KeyError) as exc:
+            return str(exc)
+        except requests.RequestException as exc:
+            return f"ComfyUI에 물어보지 못했습니다: {exc}"
+        return ""
 
     def generate(self, prompt_text, output_path, progress=None):
         raise NotImplementedError("comfyui 어댑터는 장면 단위(generate_shot)로만 동작합니다.")

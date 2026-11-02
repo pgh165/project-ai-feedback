@@ -20,7 +20,7 @@ from ..models import (
     ALL_STATUSES, CLIPS_READY, FAILED_STATUS, IMAGES_READY, REVIEW_STATUSES, ROUND_STATUSES,
     ClusterResult, Feedback, GenerationJob, ShotRender, VideoRound, db,
 )
-from . import approval, edit_plan, narration, quality_gate, storyboard_model as sbm, youtube_client
+from . import approval, edit_plan, motion_tracks, narration, quality_gate, storyboard_model as sbm, youtube_client
 from .classifier import create_classifier
 from .classifier.timestamp import extract_timestamp_sec
 from .feedback_target import REGEN_TARGETS
@@ -183,6 +183,11 @@ def ensure_storyboard(round_obj, config):
     prev = _previous_round(round_obj)
     if prev is not None and config.get("PARTIAL_REGEN_ENABLED", True):
         _apply_feedback_to_shots(storyboard, prev, round_obj)
+    if prev is not None:  # 움직임 경로는 프롬프트 문서에 없다 → 같은 묘사의 장면이면 이어 간다 (첫 프레임이 바뀌면 is_active가 걸러 낸다)
+        for shot in storyboard["shots"]:
+            old = sbm.get_shot(prev.storyboard_data or {"shots": []}, shot["id"])
+            if old and old.get("motion") and old["prompt"].strip() == shot["prompt"].strip():
+                shot["motion"] = old["motion"]
     # 편집 설정(이전 버전 검토에서 정한 전환·소리·자막·길이·순서)은 러프컷 합성에만 쓴다 — 장면 서명에 들어가지 않는다
     plan = edit_plan.loads(round_obj.edit_json or "", [s["id"] for s in storyboard["shots"]])
     if not edit_plan.is_default(plan):
@@ -843,11 +848,17 @@ def run_staged(app, round_id, payload):
 
     # stage == "clips": 승인된 이미지로 컷 영상을 만든다
     targets = requested or [i for i in ids if needs_clip(i)]
-    for n, shot_id in enumerate(targets):
+    # 여러 컷 뽑기: 경로를 저장하며 고른 컷 수(payload)나, 이미지 승인 때는 경로에 저장된 컷 수만큼 시드를 바꿔 만든다
+    takes = {i: int(payload.get("takes") or 1) if requested
+             else int((shots[i].get("motion") or {}).get("takes", 1)) if motion_tracks.is_active({**shots[i], "image": chosen[i].image_path if chosen.get(i) else None})
+             else 1 for i in targets}
+    work = [(i, k) for i in targets for k in range(takes[i])]
+    first_seed = {i: int(shots[i].get("seed", storyboard["defaults"]["seed"])) for i in targets}
+    for n, (shot_id, take) in enumerate(work):
         if round_id in _cancel_requests:
             stopped = True
             break
-        shot = shots[shot_id]
+        shot = {**shots[shot_id], "seed": first_seed[shot_id] + take * SEED_REROLL_STEP}
         base = chosen.get(shot_id)
         end_frame = payload.get("end_frame") if requested == [shot_id] else None  # '이 순간을 끝으로 다시 만들기'
         if end_frame and payload.get("base_render"):  # 끝 순간을 고른 그 버전의 첫 프레임에서 시작
@@ -857,7 +868,7 @@ def run_staged(app, round_id, payload):
             failures.append(shot_id)
             continue
         inputs = {**shot, "image": base.image_path, **({"end_image": end_frame} if end_frame else {})}
-        if reroll:  # 같은 이미지로 새 시드의 새 버전
+        if reroll or take:  # 같은 이미지로 새 시드의 새 버전
             render = ShotRender(
                 round_id=round_obj.id, shot_id=shot_id, version=_next_version(round_obj.id, shot_id),
                 status="running", generator="local", workflow=base.workflow, image_path=base.image_path,
@@ -871,13 +882,16 @@ def run_staged(app, round_id, payload):
         render.prompt, render.seed, render.workflow = params["prompt"], params["seed"], params["workflow"]
         render.end_image_path = end_frame or ""
         render.duration, render.frames = params["duration"], params["frames"]  # 의견으로 길이가 바뀌었을 수 있다
-        round_obj.generation_detail = f"컷 {n + 1}/{len(targets)} 생성 중 ({shot_id})"
+        if take:  # 다음 다시 뽑기가 이 시드와 겹치지 않게 저장해 둔다
+            sbm.get_shot(storyboard, shot_id)["seed"] = shot["seed"]
+            round_obj.storyboard_json = sbm.dumps(storyboard)
+        round_obj.generation_detail = f"컷 {n + 1}/{len(work)} 생성 중 ({shot_id})"
         db.session.commit()
         try:
             result = adapter.generate_shot(
                 storyboard, inputs,
                 out_dir / shot_id / f"v{render.version}.mp4",
-                _stage_progress(round_obj, len(targets), n, "컷"))
+                _stage_progress(round_obj, len(work), n, "컷"))
         except Exception as exc:
             log.exception("장면 %s 컷 생성 실패", shot_id)
             _fail_render(render.id, exc)
@@ -1040,6 +1054,62 @@ def regenerate_clip(round_obj, shot_id, note, config):
                             {"stage": "images", "shot_ids": [shot_id], "reroll": True})
     return jobs.enqueue("generate_video", round_obj.id,
                         {"stage": "clips", "shot_ids": [shot_id], "reroll": True})
+
+
+def set_shot_motion(round_obj, shot_id, motion, config, takes=1):
+    """장면의 움직임 경로를 저장하거나(motion dict) 지운다(None). 경로가 그대로면 아무것도 하지 않는다.
+    이미지 확인 단계면 저장만 하고(승인 때 경로대로 만든다), 컷 확인·올릴 영상 확인이면 그 장면의 컷만 새 버전으로 만든다.
+    takes: 시드를 바꿔 만들 컷 수 — 집어 올리기처럼 시드에 따라 성공이 갈리는 동작은 여러 개를 뽑아 고른다.
+    반환: {"changed": 바뀌었는지, "regenerating": 컷을 만들기 시작했는지}"""
+    from . import jobs, motion_tracks
+    from .video_generator import resolve_local_adapter
+
+    if round_obj.status not in (IMAGES_READY, CLIPS_READY, "video_ready"):
+        raise PipelineError("움직임 경로는 이미지 확인·컷 확인·올릴 영상 확인 단계(공개 전)에서만 고칠 수 있습니다.")
+    busy = GenerationJob.query.filter(GenerationJob.round_id == round_obj.id,
+                                      GenerationJob.status.in_(("queued", "running"))).first()
+    if busy is not None:
+        raise PipelineError("만드는 중에는 움직임 경로를 고칠 수 없습니다. 끝나거나 중지한 뒤에 고치세요.")
+    storyboard = ensure_storyboard(round_obj, config)
+    shot = sbm.get_shot(storyboard, shot_id)
+    if shot is None:
+        raise PipelineError(f"장면 {shot_id}을(를) 찾을 수 없습니다.")
+    new = None
+    if motion is not None:
+        base = next((r for r in ShotRender.query.filter_by(round_id=round_obj.id, shot_id=shot_id, selected=True)
+                     if r.image_path), None)
+        if base is None:
+            raise PipelineError("첫 프레임 이미지가 있는 장면에만 움직임 경로를 줄 수 있습니다.")
+        try:
+            new = motion_tracks.from_request(motion, base.image_path)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
+        adapter, _reason = resolve_local_adapter(config)
+        problem = adapter.motion_problem() if hasattr(adapter, "motion_problem") else "움직임 경로는 ComfyUI로만 만들 수 있습니다."
+        if problem:
+            raise PipelineError(problem)
+    old = shot.get("motion")
+    takes = min(max(int(takes or 1), 1), motion_tracks.MAX_TAKES)
+    if (old and new and motion_tracks.digest(old) == motion_tracks.digest(new)) or (not old and not new):
+        if old and new and old.get("takes", 1) != takes:  # 컷 수만 바뀌면 다음 생성부터 — 경로가 같아 지금 다시 만들지 않는다
+            old["takes"] = takes
+            round_obj.storyboard_json = sbm.dumps(storyboard)
+            db.session.commit()
+        return {"changed": False, "regenerating": False}
+    if new:
+        new["takes"] = takes
+        shot["motion"] = new
+    else:
+        shot.pop("motion", None)
+    round_obj.storyboard_json = sbm.dumps(storyboard)
+    if round_obj.status == IMAGES_READY:
+        db.session.commit()
+        return {"changed": True, "regenerating": False}
+    _reroll_shot(round_obj, shot_id, "", config)
+    _begin_stage(round_obj, f"{shot_id} {'움직임 경로대로' if new else '움직임 경로 없이'} 컷 다시 만드는 중")
+    jobs.enqueue("generate_video", round_obj.id,
+                 {"stage": "clips", "shot_ids": [shot_id], "reroll": True, "takes": takes if new else 1})
+    return {"changed": True, "regenerating": True}
 
 
 END_FRAME_MIN_SEC = 0.5  # 이보다 앞 순간은 첫 프레임과 거의 같아 움직임이 없다
@@ -1796,6 +1866,10 @@ def status_payload(app, round_obj, url_for):
                          if chosen and chosen.path and os.path.exists(chosen.path) else ""),
             "seed": chosen.seed if chosen else shot.get("seed"),
             "notes": list(shot.get("notes") or []),
+            # stale: 첫 프레임을 다시 뽑아 경로가 어긋남 — 경로 없이 만들어지므로 다시 그려야 한다
+            "motion": ({"tracks": len(shot["motion"]["tracks"]),
+                        "stale": not (chosen and chosen.image_path == shot["motion"]["image"])}
+                       if shot.get("motion") else None),
             "reused": bool(chosen and chosen.status == "reused"),
             "enhanced_prompt": chosen.enhanced_prompt if chosen and chosen.enhanced_prompt else "",
             "narration": shot.get("narration", ""),

@@ -37,6 +37,7 @@ class FakeComfyUI:
         self.submitted = []          # 제출된 워크플로(dict) 목록
         self.uploads = 0
         self.frees = 0
+        self.missing_nodes = set()   # /object_info에서 없다고 답할 노드 (설치 안 된 커스텀 노드 시험)
         self.fail_markers = set()    # 프롬프트에 이 문자열이 있으면 실행 오류로 응답
         self.drop_markers = set()    # 프롬프트에 이 문자열이 있으면 큐·history 어디에도 남지 않음(큐 비움 모사)
         self._jobs = {}              # prompt_id -> (제출 시각, 실패 여부)
@@ -73,6 +74,12 @@ class FakeComfyUI:
                             "10": {"images": [{"filename": f"{pid}.png", "subfolder": "", "type": "output"}]}}}})
                     return self._json({pid: {"status": {"status_str": "success"}, "outputs": {
                         "9": {"videos": [{"filename": f"{pid}.mp4", "subfolder": "", "type": "output"}]}}}})
+                if path.startswith("/object_info/"):
+                    name = path.rsplit("/", 1)[1]
+                    if name in outer.missing_nodes:
+                        return self._json({})
+                    return self._json({name: {"input": {"required": {"lora_name": ["COMBO", {"options": [
+                        "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors"]}]}}}})
                 if path == "/queue":
                     pending = [[0, pid] for pid, j in outer._jobs.items()
                                if not j[3] and time.time() - j[0] < outer.result_delay]

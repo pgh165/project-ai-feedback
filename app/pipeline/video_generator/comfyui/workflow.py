@@ -101,6 +101,10 @@ def fill(template, mapping, params, uploaded_image=None, enhance=False, uploaded
         if "end_image" not in mapping:
             raise KeyError("mapping에 'end_image' 없음 (처음·끝 프레임 워크플로가 아닙니다)")
         put("end_image", uploaded_end_image)
+    if params.get("tracks"):
+        if "tracks" not in mapping:
+            raise KeyError("mapping에 'tracks' 없음 (움직임 경로 워크플로가 아닙니다)")
+        put("tracks", params["tracks"])
     if enhance:
         nodes = enhance_nodes(wf)
         if not nodes["switch"] or not nodes["generate"]:

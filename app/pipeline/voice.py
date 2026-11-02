@@ -4,8 +4,6 @@
   speaker    "<엔진>:<목소리>" — 엔진과 목소리를 한 목록에서 고른다. 비우면 설정(VOICE_ADAPTER + 엔진별 기본 목소리).
                edge        Microsoft 신경망 음성 (계정 불필요, 인터넷 필요) — 한국어가 가장 자연스러워 기본
                supertonic  Supertonic-3 (로컬 CPU, 오프라인)
-               qwen        Qwen3-TTS (로컬 GPU) — 한국어 억양이 어색해 기본에서 뺐다
-  tone / instruct  말투 지시문 — Qwen3-TTS만 따른다. 영어로 줄 때 가장 잘 따른다.
 크기·빠르기는 버전별 편집 설정(edit_plan narration_gain / narration_tempo)이다.
 목소리를 바꾸면 narration._cache_key가 달라져 음성만 다시 합성된다 (장면은 그대로).
 """
@@ -24,19 +22,10 @@ SPEAKERS = {
     "supertonic:M1": ("Supertonic M1", "남성 · 로컬(오프라인)"),
     "supertonic:M2": ("Supertonic M2", "남성 · 로컬(오프라인)"),
     "supertonic:M3": ("Supertonic M3", "남성 · 로컬(오프라인)"),
-    "qwen:sohee": ("Qwen 소희", "여성 · 로컬 GPU · 억양이 어색할 수 있음"),
 }
-TONES = {  # 키 → (화면 이름, 모델에 줄 지시문). Qwen3-TTS만 따른다.
-    "": ("기본", ""),
-    "anchor": ("차분한 아나운서", "Speak in a calm, clear news-anchor tone with steady pacing and precise pronunciation."),
-    "promo": ("밝은 홍보", "Speak in a bright, energetic and friendly promotional tone, smiling and upbeat."),
-    "warm": ("따뜻한 이야기", "Speak warmly and softly, like telling a heartfelt story to a friend."),
-    "confident": ("자신감 있는 발표", "Speak with a confident, powerful and inspiring presentation tone."),
-    "custom": ("직접 적기", ""),
-}
-DEFAULTS = {"enabled": True, "speaker": "", "tone": "", "instruct": ""}
+DEFAULTS = {"enabled": True, "speaker": ""}
 SAMPLE_TEXT = "안녕하세요. 이 목소리로 영상의 내레이션을 읽어 드립니다."
-_ENGINE_VOICE_KEY = {"edge": "EDGE_TTS_VOICE", "supertonic": "SUPERTONIC_VOICE", "qwen": "QWEN_TTS_SPEAKER"}
+_ENGINE_VOICE_KEY = {"edge": "EDGE_TTS_VOICE", "supertonic": "SUPERTONIC_VOICE"}
 
 
 def normalize(data):
@@ -44,15 +33,7 @@ def normalize(data):
     src = data or {}
     out["enabled"] = bool(src.get("enabled", True))
     speaker = str(src.get("speaker") or "").strip()
-    if speaker and ":" not in speaker:  # 예전 저장값(Qwen 화자 이름만)
-        speaker = f"qwen:{speaker.lower()}"
-    out["speaker"] = speaker if speaker in SPEAKERS else ""
-    tone = str(src.get("tone") or "")
-    out["tone"] = tone if tone in TONES else ""
-    if out["tone"] == "custom":
-        out["instruct"] = " ".join(str(src.get("instruct") or "").split())[:300]
-        if not out["instruct"]:
-            out["tone"] = ""
+    out["speaker"] = speaker if speaker in SPEAKERS else ""  # 없어진 목소리(예전 Qwen 저장값)는 기본 목소리로
     return out
 
 
@@ -68,20 +49,15 @@ def save(session, settings):
     session.voice_json = "" if settings == DEFAULTS else json.dumps(settings, ensure_ascii=False)
 
 
-def instruct_text(settings):
-    s = normalize(settings)
-    return s["instruct"] if s["tone"] == "custom" else TONES[s["tone"]][1]
-
-
 def effective_speaker(config, settings):
     """지금 쓰일 "<엔진>:<목소리>" (프로젝트에서 고른 것, 없으면 설정 기본값)."""
     s = normalize(settings)
     if s["speaker"]:
         return s["speaker"]
     engine = str(config.get("VOICE_ADAPTER") or "edge").lower()
-    defaults = {"edge": "ko-KR-SunHiNeural", "supertonic": "F1", "qwen": "sohee"}
+    defaults = {"edge": "ko-KR-SunHiNeural", "supertonic": "F1"}
     voice = str(config.get(_ENGINE_VOICE_KEY.get(engine, ""), "") or defaults.get(engine, ""))
-    return f"{engine}:{voice.lower() if engine == 'qwen' else voice}"
+    return f"{engine}:{voice}"
 
 
 def apply(config, settings):
@@ -92,18 +68,11 @@ def apply(config, settings):
         engine, voice = s["speaker"].split(":", 1)
         cfg["VOICE_ADAPTER"] = engine
         cfg[_ENGINE_VOICE_KEY[engine]] = voice
-    if s["tone"]:
-        cfg["QWEN_TTS_INSTRUCT"] = instruct_text(s)
     return cfg
 
 
-def engine_of(config, settings):
-    return effective_speaker(config, settings).split(":", 1)[0]
-
-
 def preview_key(config, settings, text):
-    cfg = apply(config, settings)
-    raw = "|".join([effective_speaker(config, settings), str(cfg.get("QWEN_TTS_INSTRUCT", "")), text])
+    raw = "|".join([effective_speaker(config, settings), text])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
@@ -112,5 +81,4 @@ def describe(config, settings):
     if not s["enabled"]:
         return "내레이션 끔"
     name = SPEAKERS.get(effective_speaker(config, s), (effective_speaker(config, s),))[0]
-    tone = s["instruct"] if s["tone"] == "custom" else TONES[s["tone"]][0]
-    return f"목소리 {name}" + (f" · {tone}" if s["tone"] and engine_of(config, s) == "qwen" else "")
+    return f"목소리 {name}"
