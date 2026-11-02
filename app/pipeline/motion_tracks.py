@@ -14,6 +14,8 @@ import math
 MAX_TRACKS = 64
 MAX_POINTS = 2000
 MAX_TAKES = 4
+ANGLE_LIMIT = 90  # 관절 키프레임 각도 범위(°)
+MAX_KEYFRAMES = 8
 PRESET_POINTS = 61  # 프리셋 경로의 점 개수 (생성 때 프레임 수만큼 다시 나눈다)
 
 # 로봇팔 프리셋 — 사용자는 첫 프레임에서 points를 차례로 찍고 params만 고른다. 경로는 build가 계산해 팔 길이가 유지된다.
@@ -31,7 +33,43 @@ PRESETS = {
         "params": {"lift": {"label": "올리는 높이(화면 높이의 %)", "min": 5, "max": 40, "default": 20}},
         "links": [[10, 11], [11, 1], [1, 3], [3, 4], [4, 5], [4, 6], [8, 9]],  # 받침-어깨-팔꿈치-손목-손바닥-집게 양쪽, 물체 (_grasp_tracks)
     },
+    "joints": {
+        "label": "관절 직접 지정", "takes": 1, "keyframes": True,  # 단계별 관절 각도. 문장으로 만들면(motion_plan) 여기로 들어온다
+        "points": [["base", "받침"], ["shoulder", "어깨 관절"], ["elbow", "팔꿈치 관절"], ["wrist", "손목 관절"], ["grip", "집게 끝"]],
+        "params": {},
+        "links": [[6, 7], [7, 1], [1, 3], [3, 5]],  # 받침-어깨-팔꿈치-손목-집게 (_joint_tracks)
+    },
 }
+
+
+def number(value, label):
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} 값이 숫자가 아닙니다.") from exc
+    if not math.isfinite(result):
+        raise ValueError(f"{label} 값이 숫자가 아닙니다.")
+    return result
+
+
+def clean_keyframes(raw):
+    """[{t, shoulder, elbow, wrist}, ...] 검사 — 각도는 첫 프레임 대비 변화량(°), 양수는 팔 끝이 위로. 잘못되면 ValueError."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_KEYFRAMES:
+        raise ValueError(f"동작 단계는 1~{MAX_KEYFRAMES}개여야 합니다.")
+    frames = []
+    for frame in raw:
+        if not isinstance(frame, dict):
+            raise ValueError("동작 단계 형식이 잘못되었습니다.")
+        t = number(frame.get("t"), "시점")
+        if not 0 < t <= 1 or (frames and t <= frames[-1]["t"]):
+            raise ValueError("동작 시점은 0~1 사이에서 차례로 늘어나야 합니다.")
+        angles = {j: min(max(number(frame.get(j, 0), "각도"), -ANGLE_LIMIT), ANGLE_LIMIT)
+                  for j in ("shoulder", "elbow", "wrist")}
+        frames.append({"t": round(t, 3), **angles})
+    if not any(f[j] for f in frames for j in ("shoulder", "elbow", "wrist")):
+        raise ValueError("움직이는 관절이 없습니다.")
+    frames[-1]["t"] = 1.0  # 마지막 동작이 영상 끝에서 멈추게
+    return frames
 
 
 def _ease(t, t0=0.0, t1=1.0):
@@ -62,6 +100,38 @@ def _elbow_tracks(p, params):
     tracks = [[_rotate(q, pivot, angle * _ease(i / (PRESET_POINTS - 1))) for i in range(PRESET_POINTS)] for q in moving]
     upper = ((p["shoulder"][0] + pivot[0]) / 2, (p["shoulder"][1] + pivot[1]) / 2)
     return tracks, [[p["base"]], [p["shoulder"]], [upper], [pivot]]
+
+
+def _joint_tracks(p, keyframes, width, height):
+    """단계별 관절 각도 → 경로 (순기구학). 팔 끝이 화면 밖으로 크게 나가면 ValueError."""
+    shoulder, elbow, wrist, grip = p["shoulder"], p["elbow"], p["wrist"], p["grip"]
+    direction = 1 if wrist[0] >= elbow[0] else -1  # 양수 = 팔 끝이 위로 (화면 좌표는 y가 아래, 팔이 왼쪽으로 뻗으면 반대)
+    stops = [{"t": 0.0, "shoulder": 0.0, "elbow": 0.0, "wrist": 0.0}, *keyframes]
+    upper_mid = ((shoulder[0] + elbow[0]) / 2, (shoulder[1] + elbow[1]) / 2)
+    fore_mid = ((elbow[0] + wrist[0]) / 2, (elbow[1] + wrist[1]) / 2)
+    grip_mid = ((wrist[0] + grip[0]) / 2, (wrist[1] + grip[1]) / 2)
+    tracks = [[] for _ in range(6)]
+    for i in range(PRESET_POINTS):
+        t = i / (PRESET_POINTS - 1)
+        a, b = next((pair for pair in zip(stops, stops[1:]) if t <= pair[1]["t"]), (stops[-1], stops[-1]))
+        u = _ease(t, a["t"], b["t"]) if b["t"] > a["t"] else 1.0
+        s_angle, e_angle, w_angle = (-direction * (a[j] + (b[j] - a[j]) * u) for j in ("shoulder", "elbow", "wrist"))
+
+        def at_elbow(q):  # 팔꿈치 회전을 먼저 → 어깨 회전 (어깨가 돌면 그 앞이 전부 같이 돈다)
+            return _rotate(_rotate(q, elbow, e_angle), shoulder, s_angle)
+
+        e_now, w_now = _rotate(elbow, shoulder, s_angle), at_elbow(wrist)
+        grip_turn = s_angle + e_angle + w_angle
+        hand = (grip[0] - wrist[0], grip[1] - wrist[1])
+        g_now = _rotate((w_now[0] + hand[0], w_now[1] + hand[1]), w_now, grip_turn)
+        points = (_rotate(upper_mid, shoulder, s_angle), e_now, at_elbow(fore_mid), w_now,
+                  ((w_now[0] + g_now[0]) / 2, (w_now[1] + g_now[1]) / 2), g_now)
+        for track, q in zip(tracks, points):
+            track.append(q)
+    margin_x, margin_y = 0.05 * width, 0.05 * height
+    if any(not (-margin_x <= q[0] <= width + margin_x and -margin_y <= q[1] <= height + margin_y) for q in tracks[3] + tracks[5]):
+        raise ValueError("팔 끝이 화면 밖으로 나갑니다. 각도를 줄여 주세요.")
+    return tracks, [[p["base"]], [shoulder]]
 
 
 def _solve_elbow(shoulder, wrist, upper, fore, side):
@@ -135,7 +205,13 @@ def build_preset(name, points, params, width, height):
         except (TypeError, ValueError) as exc:
             raise ValueError(f"'{spec['label']}' 값이 숫자가 아닙니다.") from exc
         values[key] = min(max(value, spec["min"]), spec["max"])
-    moving, fixed = _elbow_tracks(p, values) if name == "elbow" else _grasp_tracks(p, values, height)
+    if name == "joints":
+        values["keyframes"] = clean_keyframes((params or {}).get("keyframes"))
+        moving, fixed = _joint_tracks(p, values["keyframes"], width, height)
+    elif name == "elbow":
+        moving, fixed = _elbow_tracks(p, values)
+    else:
+        moving, fixed = _grasp_tracks(p, values, height)
     tracks = moving + fixed + _anchors(width, height, moving)
     return [[[round(x, 2), round(y, 2)] for x, y in track] for track in tracks], values
 

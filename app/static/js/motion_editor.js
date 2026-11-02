@@ -48,8 +48,62 @@
       previewBtn.textContent = '뼈대 미리 보기';
     }
 
+    function renderKeyframes() {
+      var JOINTS = [['shoulder', '어깨'], ['elbow', '팔꿈치'], ['wrist', '손목']];
+      var frames = state.params.keyframes;
+      var table = document.createElement('table');
+      table.className = 'motion-frames';
+      var head = table.insertRow();
+      ['시점(0~1)'].concat(JOINTS.map(function (j) { return j[1] + '°'; })).concat(['']).forEach(function (text) {
+        var th = document.createElement('th');
+        th.textContent = text;
+        head.appendChild(th);
+      });
+      frames.forEach(function (frame, index) {
+        var row = table.insertRow();
+        [['t', 0.01]].concat(JOINTS.map(function (j) { return [j[0], 1]; })).forEach(function (cell) {
+          var input = document.createElement('input');
+          input.type = 'number';
+          input.className = 'form-control form-control-sm';
+          input.step = cell[1];
+          input.value = frame[cell[0]];
+          input.setAttribute('aria-label', (index + 1) + '단계 ' + cell[0]);
+          input.addEventListener('input', function () { frame[cell[0]] = Number(input.value); stopPreview(); refresh(); });
+          row.insertCell().appendChild(input);
+        });
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-quiet btn-sm';
+        remove.textContent = '×';
+        remove.setAttribute('aria-label', (index + 1) + '단계 지우기');
+        remove.disabled = frames.length === 1;
+        remove.addEventListener('click', function () { frames.splice(index, 1); stopPreview(); renderParams(); refresh(); });
+        row.insertCell().appendChild(remove);
+      });
+      paramsBox.appendChild(table);
+      var add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'btn btn-quiet btn-sm';
+      add.textContent = '단계 추가';
+      add.disabled = frames.length >= 8;
+      add.addEventListener('click', function () {
+        var last = frames[frames.length - 1];
+        frames.forEach(function (f, i) { f.t = Math.round((i + 1) / (frames.length + 1) * 100) / 100; });
+        frames.push({t: 1, shoulder: last.shoulder, elbow: last.elbow, wrist: last.wrist});
+        stopPreview();
+        renderParams();
+        refresh();
+      });
+      paramsBox.appendChild(add);
+    }
+
     function renderParams() {
       paramsBox.textContent = '';
+      if (preset().keyframes) {
+        if (!state.params.keyframes) state.params.keyframes = [{t: 1, shoulder: 0, elbow: 30, wrist: 0}];
+        renderKeyframes();
+        return;
+      }
       Object.keys(preset().params).forEach(function (key) {
         var spec = preset().params[key];
         if (state.params[key] === undefined) state.params[key] = spec.default;
@@ -188,6 +242,30 @@
       var res = await postJson(panel.dataset.url, Object.assign(body(), {takes: takes}));
       if (!res.ok) { message.textContent = res.data.error || '저장 실패'; saveBtn.disabled = false; return; }
       location.reload();
+    });
+
+    var aiBtn = panel.querySelector('.motion-ai'), summary = panel.querySelector('.motion-summary');
+    aiBtn.addEventListener('click', async function () {
+      var text = panel.querySelector('.motion-text').value.trim();
+      message.textContent = '';
+      summary.textContent = '';
+      if (!text) { message.textContent = '어떤 동작을 원하는지 적어 주세요.'; return; }
+      aiBtn.disabled = true;
+      aiBtn.textContent = 'AI가 분석하는 중… (처음엔 30초쯤)';
+      var res = await postJson('/api/motion/plan', {text: text});
+      aiBtn.disabled = false;
+      aiBtn.textContent = 'AI로 동작 만들기';
+      if (!res.ok) { message.textContent = res.data.error || '동작을 만들지 못했습니다'; return; }
+      var plan = res.data.plan;
+      if (plan.action === 'unsupported') { message.textContent = plan.reason; return; }
+      stopPreview();
+      select.value = plan.action;
+      state.params = plan.action === 'joints' ? {keyframes: plan.keyframes} : {lift: plan.lift};
+      takesSel.value = String(preset().takes);
+      renderParams();
+      refresh();
+      summary.textContent = plan.summary + (res.data.fallback_reason
+        ? ' (' + res.data.fallback_reason + ' 작은 모델로 만들어 틀릴 수 있습니다)' : '') + ' 미리 보기로 확인하세요.';
     });
 
     panel.querySelector('.motion-undo').addEventListener('click', function () {

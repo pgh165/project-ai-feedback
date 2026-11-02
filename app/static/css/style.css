@@ -834,3 +834,10 @@ pre.diff .hunk { color: var(--faint); display: block; }
 .motion-message:empty { display: none; }
 .motion-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
 @media (max-width: 760px) { .motion-editor { grid-template-columns: minmax(0, 1fr); } }
+
+.motion-summary { margin: 0; color: var(--good); }
+.motion-summary:empty { display: none; }
+.motion-frames { width: 100%; font-size: .78rem; }
+.motion-frames th { font-weight: 500; color: var(--muted); padding: 0 .15rem; }
+.motion-frames td { padding: .1rem .15rem; }
+.motion-frames input { min-width: 0; padding: .1rem .25rem; }

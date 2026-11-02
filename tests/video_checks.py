@@ -612,6 +612,53 @@ def run(check):
         again = [w["29"]["inputs"]["noise_seed"] for w in fake.submitted[sub0:] if "29" in w]
         check("여러 컷 뒤 다시 뽑기는 하나만 만들고 앞의 시드와 겹치지 않음",
               r.status_code == 200 and len(again) == 1 and again[0] not in seeds, (again, seeds))
+        # 문장 → 동작 계획 → 관절 키프레임 경로
+        from app.pipeline import llm, motion_plan
+        keyframes = [{"t": 0.5, "shoulder": 10, "elbow": 40, "wrist": 0}, {"t": 0.8, "shoulder": 10, "elbow": 40, "wrist": 30},
+                     {"t": 0.9, "shoulder": 0, "elbow": 20, "wrist": -30}]
+        joint_points = {k: elbow_points[k] for k in elbow_points}
+        r_j = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "params": {"keyframes": keyframes},
+                                                       "width": 400, "height": 300})
+        jt = r_j.get_json().get("tracks", [])
+        d = lambda a, b: ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+        upper = [d(jt[1][0], [50, 70])] + [d(e, [50, 70]) for e in jt[1]]
+        fore_len = [d(e, w) for e, w in zip(jt[1], jt[3])]
+        hand_len = [d(w, g) for w, g in zip(jt[3], jt[5])]
+        check("관절 키프레임: 어깨·팔꿈치·손목을 돌려도 모든 팔 길이 유지, 올리는 각도면 손목이 위로, 마지막 시점은 1.0",
+              r_j.status_code == 200 and max(upper) - min(upper) < 0.2 and max(fore_len) - min(fore_len) < 0.2
+              and max(hand_len) - min(hand_len) < 0.2 and min(p[1] for p in jt[3]) < jt[3][0][1]
+              and motion_tracks.clean_keyframes(keyframes)[-1]["t"] == 1.0,
+              (r_j.status_code, max(upper) - min(upper), max(fore_len) - min(fore_len), max(hand_len) - min(hand_len)))
+        mirrored = {k: [128 - x, y] for k, (x, y) in joint_points.items()}
+        mt, _v = motion_tracks.build_preset("joints", mirrored, {"keyframes": [{"t": 1, "elbow": 30}]}, 128, 96)
+        check("왼쪽으로 뻗은 팔도 양수 각도면 위로", mt[3][-1][1] < mt[3][0][1], mt[3][-1])
+        r_out = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "width": 128, "height": 96,
+                                                         "params": {"keyframes": [{"t": 1, "shoulder": 90, "elbow": 90}]}})
+        r_back = client.post("/api/motion/preview", json={"preset": "joints", "points": joint_points, "width": 128, "height": 96,
+                                                          "params": {"keyframes": [{"t": 0.5, "elbow": 10}, {"t": 0.4, "elbow": 20}]}})
+        check("관절 키프레임 오류 안내: 화면 밖, 시점 역전",
+              r_out.status_code == 400 and "화면 밖" in r_out.get_json()["error"]
+              and r_back.status_code == 400 and "차례로" in r_back.get_json()["error"], (r_out.status_code, r_back.status_code))
+        real_strong, answers = llm.generate_strong, {}
+
+        def fake_strong(system, user, config, max_tokens=0, fallback_config=None):
+            return answers.get(user, "모르겠습니다"), "fake", ""
+        llm.generate_strong = fake_strong
+        try:
+            answers.update({
+                "올려": '설명 {"action": "joints", "keyframes": [{"t": 0.6, "elbow": 500}], "summary": "올립니다."} 끝',
+                "집어": '{"action": "grasp", "lift": 99, "summary": "집습니다."}',
+                "넣어": '{"action": "unsupported", "reason": "넣기는 안 됩니다."}',
+                "역전": '{"action": "joints", "keyframes": [{"t": 0.9, "elbow": 1}, {"t": 0.2, "elbow": 2}]}'})
+            plan = lambda t: client.post("/api/motion/plan", json={"text": t})
+            up, grab, no, bad, junk, empty = plan("올려"), plan("집어"), plan("넣어"), plan("역전"), plan("아무말"), plan(" ")
+            check("문장 → 계획: JSON만 골라 읽고 각도·높이는 범위 안으로, 불가능·잘못된 계획·빈 문장은 안내",
+                  up.status_code == 200 and up.get_json()["plan"]["keyframes"] == [{"t": 1.0, "shoulder": 0.0, "elbow": 90.0, "wrist": 0.0}]
+                  and grab.get_json()["plan"]["lift"] == 40 and no.get_json()["plan"]["action"] == "unsupported"
+                  and bad.status_code == 422 and junk.status_code == 422 and empty.status_code == 422,
+                  (up.get_json(), bad.status_code, junk.status_code, empty.status_code))
+        finally:
+            llm.generate_strong = real_strong
         client.post(motion_url, json={"tracks": None})
         from app.pipeline import storyboard_model as sbm_
         sb_ = {"style": "", "negative": "", "defaults": {"width": 640, "height": 384, "fps": 24, "seed": 1}}

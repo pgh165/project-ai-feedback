@@ -117,6 +117,10 @@
           <canvas class="motion-canvas" aria-label="첫 프레임에 관절과 물체 위치를 찍는 화면"></canvas>
         </div>
         <div class="motion-side">
+          <label>원하는 동작을 문장으로 {{ ui.tip('AI가 문장을 관절 동작으로 바꿉니다. 틀릴 수 있으니 뼈대 미리 보기로 확인하고, 필요하면 각도를 고치세요. 첫 프레임에 없는 물체나 카메라 쪽으로 다가오는 동작은 만들 수 없습니다.') }}
+            <textarea class="form-control form-control-sm motion-text" rows="2" maxlength="300" placeholder="예: 팔을 들어 올리고 손목을 위아래로 흔들어"></textarea></label>
+          <button type="button" class="btn btn-outline-primary btn-sm motion-ai">AI로 동작 만들기</button>
+          <p class="motion-summary" aria-live="polite"></p>
           <label>동작 {{ ui.tip('옆에서 본 로봇팔에 맞춘 동작입니다. 카메라 쪽으로 뻗는 팔은 원근을 계산하지 않아 어긋날 수 있습니다.') }}
             <select class="form-select form-select-sm motion-preset"></select></label>
           <div class="motion-params"></div>

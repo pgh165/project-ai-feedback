@@ -1038,6 +1038,19 @@ def motion_presets():
     return jsonify(motion_tracks.PRESETS)
 
 
+@bp.route("/api/motion/plan", methods=["POST"])
+def motion_plan_from_text():
+    """동작 문장 → 동작 계획 (저장하지 않음) — body {"text"}. 화면이 프리셋·값을 채우고, 사람이 미리 보기로 확인한다."""
+    from ..pipeline import motion_plan
+
+    try:
+        plan, source, reason = motion_plan.plan_from_text((request.get_json(silent=True) or {}).get("text"),
+                                                          current_app.config)
+    except motion_plan.MotionPlanError as exc:
+        return _error(str(exc), 422)
+    return jsonify(plan=plan, source=source, fallback_reason=reason)
+
+
 @bp.route("/api/motion/preview", methods=["POST"])
 def motion_preview():
     """프리셋 + 찍은 점 → 경로 (저장하지 않음). 화면이 뼈대 미리 보기를 그릴 때 쓴다."""
