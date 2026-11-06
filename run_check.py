@@ -650,6 +650,33 @@ def _auto_motion_checks(app):
         llm.strong_server, llm.vision_ready, ap._review_shots, ap._renders, am.prepare, vg.resolve_local_adapter = old2
 
 
+def _affected_shot_timeline_checks(app):
+    """댓글 시각 → 장면은 시청자가 본 영상의 실제 구간(timeline_json)으로 (2026-11-06: 기획 길이로 계산해 한 장면씩 밀림)."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from app.pipeline import orchestrator
+
+    board = {"shots": [{"id": f"s0{i}", "duration": d} for i, d in enumerate((5, 5, 5, 3, 3, 3), start=1)]}
+    timeline = {"scenes": [{"id": "s01", "start": 0, "end": 4.39}, {"id": "s02", "start": 4.39, "end": 8.78},
+                           {"id": "s03", "start": 8.78, "end": 13.17}, {"id": "s04", "start": 13.17, "end": 15.56},
+                           {"id": "s05", "start": 15.56, "end": 17.95}, {"id": "s06", "start": 17.95, "end": 20.34}],
+                "end_card": [20.34, 26.34]}
+
+    def cluster(*secs):
+        return SimpleNamespace(feedbacks=[SimpleNamespace(timestamp_sec=s) for s in secs], topic_category="technical",
+                               representative_text="", affected_shots_json=None)
+
+    car, grip = cluster(14.0), cluster(16.0, 17.0)
+    orchestrator.assign_affected_shots(SimpleNamespace(clusters=[car, grip], timeline_json=_json.dumps(timeline)), board, app.config)
+    old_car = cluster(14.0)
+    orchestrator.assign_affected_shots(SimpleNamespace(clusters=[old_car], timeline_json=""), board, app.config)
+    check("댓글 시각 → 장면: 실제 합성 타임라인 기준 (0:14 → s04, 0:16·0:17 → s05), 타임라인이 없으면 기획 길이로",
+          _json.loads(car.affected_shots_json) == ["s04"] and _json.loads(grip.affected_shots_json) == ["s05"]
+          and _json.loads(old_car.affected_shots_json) == ["s03"],
+          (car.affected_shots_json, grip.affected_shots_json, old_car.affected_shots_json))
+
+
 def _demo_replay_checks(client, app):
     """데모 재생: 2차부터 '제작 시작'을 누르면 만들지 않고 준비해 둔 버전의 결과를 바로 쓴다."""
     import json as _json
@@ -885,6 +912,7 @@ def main():
     _feedback_revise_checks(app)
     _plan_change_checks(client, app)
     _auto_motion_checks(app)
+    _affected_shot_timeline_checks(app)
     _demo_replay_checks(client, app)
 
     from tests import video_checks

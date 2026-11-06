@@ -1920,10 +1920,25 @@ def assign_affected_shots(round_obj, storyboard, config):
     from .prompt_updater import estimate_affected_shots
 
     all_ids = [s["id"] for s in storyboard["shots"]]
+    # 시청자가 본 영상의 실제 장면 구간 (앞뒤 잘라 냄·디졸브 겹침·엔딩 카드 반영, rough_cut이 남긴 timeline_json).
+    # 기획 길이(shot_at)로 계산하면 뒤로 갈수록 한 장면씩 밀렸다 (2026-11-06: 0:14 차 장면이 s03으로 잡힘)
+    try:
+        scenes = [(s["id"], float(s["start"]), float(s["end"]))
+                  for s in (json.loads(round_obj.timeline_json or "{}").get("scenes") or [])]
+    except (ValueError, KeyError, TypeError):
+        scenes = []
+
+    def shot_at(seconds):
+        if seconds is None or seconds < 0:
+            return None
+        if scenes:
+            return next((sid for sid, start, end in scenes if start <= seconds < end), None)
+        return sbm.shot_at(storyboard, seconds)
+
     for cluster in round_obj.clusters:
         found = []
         for f in cluster.feedbacks:
-            shot_id = sbm.shot_at(storyboard, f.timestamp_sec)
+            shot_id = shot_at(f.timestamp_sec)
             if shot_id and shot_id not in found:
                 found.append(shot_id)
         if not found:
