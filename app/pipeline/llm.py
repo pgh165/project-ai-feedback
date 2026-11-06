@@ -103,6 +103,25 @@ def _gpu_busy():
         return False
 
 
+def gpu_lib_dir(config):
+    """llama-server가 쓸 GPU 라이브러리 폴더. 설정이 없으면 llama-server 옆의 cuda_v* 중 가장 새 것. 없으면 ''."""
+    given = config.get("REFINE_LLAMA_LIB_DIR", "")
+    if given:
+        return given if os.path.isdir(given) else ""
+    exe = config.get("REFINE_LLAMA_SERVER", "")
+    base = os.path.dirname(exe) if exe else ""
+    if not base or not os.path.isdir(base):
+        return ""
+    found = sorted(d for d in os.listdir(base) if d.startswith("cuda_v") and os.path.isdir(os.path.join(base, d)))
+    return os.path.join(base, found[-1]) if found else ""
+
+
+def vision_ready(config):
+    """큰 모델이 이미지를 볼 수 있게 설정됐는가 (서버 주소 + projector 파일)."""
+    mmproj = config.get("REFINE_LLAMA_MMPROJ", "")
+    return bool(config.get("REFINE_LLM_URL") and mmproj and os.path.isfile(mmproj))
+
+
 def _start_strong(config, url):
     """llama-server를 켜고 준비될 때까지 기다린다. 켜지 못하면 None. 켜기 전 ComfyUI 모델을 내려 VRAM을 비운다."""
     from .video_generator.comfyui.comfy_client import ComfyClient
@@ -114,8 +133,15 @@ def _start_strong(config, url):
     parsed = urlparse(url)
     cmd = [exe, "--model", model, "--host", parsed.hostname or "127.0.0.1", "--port", str(parsed.port or 8099),
            *shlex.split(config.get("REFINE_LLAMA_ARGS", ""))]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    mmproj = config.get("REFINE_LLAMA_MMPROJ", "")
+    if mmproj and os.path.isfile(mmproj):  # 이미지 입력 (AI 점검)
+        cmd += ["--mmproj", mmproj]
+    env = os.environ.copy()
+    gpu_dir = gpu_lib_dir(config)
+    if gpu_dir:  # GPU 라이브러리를 못 찾으면 CPU로 돈다 (2026-11-06 확인: 기획 한 번에 50초)
+        env["PATH"] = gpu_dir + os.pathsep + os.path.dirname(exe) + os.pathsep + env.get("PATH", "")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+                            cwd=gpu_dir or None, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     deadline = time.time() + int(config.get("REFINE_LLM_START_TIMEOUT_SEC", 180))
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -129,12 +155,22 @@ def _start_strong(config, url):
     return None
 
 
-def _strong_chat(system, user, config, url, max_tokens):
+def _strong_chat(system, user, config, url, max_tokens, image_path=None, temperature=0.4):
+    content = user
+    if image_path:  # 이미지 + 글 (projector를 넣고 켠 서버만 읽는다)
+        import base64
+        import mimetypes
+
+        mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
+        with open(image_path, "rb") as fh:
+            data = base64.b64encode(fh.read()).decode()
+        content = [{"type": "text", "text": user},
+                   {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
     try:
         resp = requests.post(
             url.rstrip("/") + "/v1/chat/completions",
-            json={"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                  "temperature": 0.4, "max_tokens": max_tokens,
+            json={"messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                  "temperature": temperature, "max_tokens": max_tokens,
                   "chat_template_kwargs": {"enable_thinking": False}},
             timeout=int(config.get("REFINE_LLM_TIMEOUT_SEC", 300)))
         resp.raise_for_status()
@@ -167,13 +203,16 @@ def strong_server(config, in_job=False):
                     proc.kill()
 
 
-def generate_strong_only(system, user, config, max_tokens=1200, in_job=False):
+def generate_strong_only(system, user, config, max_tokens=1200, in_job=False, image_path=None, temperature=None):
     """(text|None, reason) — 큰 모델만. 서버를 여기서 켰으면 다 쓰고 끈다.
     in_job=True: GPU 작업 안에서(장면 사이, ComfyUI가 쉬는 때) 부른다 — 작업이 도는 중이어도 켠다.
-    작업 큐는 워커 1개라 그 사이 다른 영상 작업이 끼어들지 않는다."""
+    작업 큐는 워커 1개라 그 사이 다른 영상 작업이 끼어들지 않는다.
+    image_path: 이미지를 함께 보낸다 (vision_ready일 때만). temperature: 점검처럼 같은 입력에 같은 답이 나와야 하면 0."""
     url = config.get("REFINE_LLM_URL", "")
     if not url:
         return None, "큰 모델이 설정되지 않아"
+    if image_path and not vision_ready(config):
+        return None, "큰 모델에 이미지 입력이 설정되지 않아"
     if not in_job and _gpu_busy():
         return None, "영상을 만드는 중이라"
     with strong_model_lock:
@@ -181,7 +220,10 @@ def generate_strong_only(system, user, config, max_tokens=1200, in_job=False):
             return None, "큰 모델을 켜지 못해"
         proc = None if _strong_alive(url) else _start_strong(config, url)
         try:
-            text = _strong_chat(system, user, config, url, max_tokens) if proc or _strong_alive(url) else None
+            extra = {**({"image_path": image_path} if image_path else {}),
+                     **({"temperature": temperature} if temperature is not None else {})}
+            text = (_strong_chat(system, user, config, url, max_tokens, **extra)
+                    if proc or _strong_alive(url) else None)
         finally:
             if proc is not None:
                 proc.terminate()
@@ -192,10 +234,11 @@ def generate_strong_only(system, user, config, max_tokens=1200, in_job=False):
     return (text, "") if text else (None, "큰 모델을 켜지 못해")
 
 
-def generate_strong(system, user, config, max_tokens=1200, fallback_config=None):
+def generate_strong(system, user, config, max_tokens=1200, fallback_config=None, in_job=False):
     """(text, source, reason). 큰 모델(REFINE_LLM_URL)을 먼저 쓰고, 못 쓰면 generate()로 (보통 e2b).
-    reason은 큰 모델을 못 쓴 이유 (화면에 '작은 모델로 했다'고 알리는 데 쓴다)."""
-    text, reason = generate_strong_only(system, user, config, max_tokens)
+    reason은 큰 모델을 못 쓴 이유 (화면에 '작은 모델로 했다'고 알리는 데 쓴다).
+    in_job=True: 작업 큐 안(AI 자동 기획)에서 부른다 — 자기 작업 때문에 '영상을 만드는 중'으로 보지 않는다."""
+    text, reason = generate_strong_only(system, user, config, max_tokens, in_job=in_job)
     if text:
         return text, config.get("REFINE_LLM_LABEL", "large"), ""
     text, source = generate(system, user, fallback_config or config, max_length=max_tokens)

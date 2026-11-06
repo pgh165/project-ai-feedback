@@ -1,7 +1,7 @@
 /* 움직임 지정: 첫 프레임에 관절·물체를 차례로 찍고 동작을 고르면, 뼈대 미리 보기로 확인한 뒤 경로를 저장한다.
    경로 계산은 서버(motion_tracks.build_preset)가 한다 — 화면은 점을 받고 돌려받은 경로를 그리기만 한다. */
 (function () {
-  var panels = document.querySelectorAll('.motion-panel');
+  var panels = document.querySelectorAll('.motion-panel:not(.reference-panel)');  // 참조 영상 패널은 모양만 같다
   if (!panels.length) return;
   var presetsReady = fetch('/api/motion/presets').then(function (r) { return r.json(); });
   var COLORS = {done: '#22C58B', moving: '#FFB020', fixed: 'rgba(255,255,255,.75)', link: '#7C5CFF', path: 'rgba(255,176,32,.55)'};

@@ -69,7 +69,8 @@ def enhance_nodes(wf):
     }
 
 
-def fill(template, mapping, params, uploaded_image=None, enhance=False, uploaded_end_image=None):
+def fill(template, mapping, params, uploaded_image=None, enhance=False, uploaded_end_image=None,
+         uploaded_reference=None):
     """params: storyboard_model.resolve_params() 결과. 값이 주입된 워크플로 dict 반환.
 
     enhance=True면 mapping의 'fixed'(자동 보강 끔)보다 우선해 Gemma 프롬프트 강화를 켜고,
@@ -101,6 +102,12 @@ def fill(template, mapping, params, uploaded_image=None, enhance=False, uploaded
         if "end_image" not in mapping:
             raise KeyError("mapping에 'end_image' 없음 (처음·끝 프레임 워크플로가 아닙니다)")
         put("end_image", uploaded_end_image)
+    if uploaded_reference is not None:  # 유니언 컨트롤: 참조 영상(윤곽선을 따라 움직인다)
+        if "reference" not in mapping:
+            raise KeyError("mapping에 'reference' 없음 (참조 영상 워크플로가 아닙니다)")
+        put("reference", uploaded_reference)
+        if "bypass_image" in mapping:
+            put("bypass_image", bool(params.get("bypass_image")))
     if params.get("tracks"):
         if "tracks" not in mapping:
             raise KeyError("mapping에 'tracks' 없음 (움직임 경로 워크플로가 아닙니다)")

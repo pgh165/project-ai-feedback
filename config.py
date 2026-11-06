@@ -82,9 +82,43 @@ class Config:
     COMFYUI_WORKFLOW_FLF = os.getenv("COMFYUI_WORKFLOW_FLF", "ltx25_flf2v")
     # 움직임 경로 (Motion Control IC-LoRA). 경로가 있는 장면만 쓴다. ComfyUI-LTXVideo 노드와 LoRA가 필요하다
     COMFYUI_WORKFLOW_MOTION = os.getenv("COMFYUI_WORKFLOW_MOTION", "ltx25_motion")
+    # 참조 영상으로 움직임 따라 하기 (LTX IC-LoRA Union Control, pipeline/reference_video.py)
+    COMFYUI_WORKFLOW_UNION = os.getenv("COMFYUI_WORKFLOW_UNION", "ltx25_union")
+    # 얼굴 사진으로 인물 그리기 (Qwen-Image-Edit-2511 Lightning 4단계). 모델이 없으면 inswapper 합성으로 대신한다
+    COMFYUI_WORKFLOW_FACE = os.getenv("COMFYUI_WORKFLOW_FACE", "qwen_face_t2i")
+    # Qwen 첫 프레임 색 보정 (pipeline/tone.py): 색이 진해 채도·대비를 낮춘다. 1.0이면 보정 안 함 (2026-11-05 사용자가 고른 값)
+    QWEN_TONE_COLOR = float(os.getenv("QWEN_TONE_COLOR", "0.85"))
+    QWEN_TONE_CONTRAST = float(os.getenv("QWEN_TONE_CONTRAST", "0.9"))
     # 단계별 확인: 이미지 → (확인·다시 뽑기) → 컷 영상 → (확인·다시 뽑기) → 사람이 누르면 러프컷.
     # 꺼져 있으면 예전처럼 한 번에 러프컷까지 만든다. comfyui 어댑터에서만 동작한다.
     COMFYUI_STAGED_REVIEW = _bool("COMFYUI_STAGED_REVIEW", False)
+    # AI 자동 진행 (pipeline/auto_pipeline.py · auto_review.py): 사람 대신 AI가 이미지·컷을 점검하고 미달 장면을 다시 만든다.
+    # 사람은 마지막에 올릴 영상만 한 번 확인한다. 기존 단계별 확인 화면은 '직접 고치기'로 남는다.
+    # 글자는 편집에서 넣는다: 모델 프롬프트의 모니터·간판·책 등을 '글자 없는 모습'으로 고쳐 보낸다 (pipeline/text_free.py)
+    TEXTLESS_PROMPTS = _bool("TEXTLESS_PROMPTS", True)
+    AUTO_REVIEW_MAX_RETRIES =int(os.getenv("AUTO_REVIEW_MAX_RETRIES", "2"))  # 장면마다 다시 만드는 최대 횟수
+    AUTO_REVIEW_MIN_SCORE = float(os.getenv("AUTO_REVIEW_MIN_SCORE", "6"))  # 묘사 일치 점수(0~10) 통과 기준
+    AUTO_REVIEW_CLIP_MIN_SCORE = float(os.getenv("AUTO_REVIEW_CLIP_MIN_SCORE", os.getenv("AUTO_REVIEW_MIN_SCORE", "6")))  # 컷 뒤쪽·끝 프레임
+    AUTO_REVIEW_TEMPERATURE = float(os.getenv("AUTO_REVIEW_TEMPERATURE", "0"))  # 26B 점검 — 같은 그림이면 같은 답이 나오게
+    AUTO_REVIEW_RECHECK_MARGIN = float(os.getenv("AUTO_REVIEW_RECHECK_MARGIN", "1"))  # 점수가 기준 ±이 안이면 한 번 더 물어 평균
+    AUTO_REVIEW_MODEL = os.getenv("AUTO_REVIEW_MODEL", "")  # 비우면 TRANSLATE_COMFY_MODEL (Gemma4 e2b, 이미지 입력)
+    AUTO_REVIEW_STILL_DIFF = float(os.getenv("AUTO_REVIEW_STILL_DIFF", "1.5"))  # 프레임 차이가 이보다 작으면 '멈춘 화면'
+    AUTO_REVIEW_DARK_LEVEL = float(os.getenv("AUTO_REVIEW_DARK_LEVEL", "18"))  # 평균 밝기(0~255)가 이보다 낮으면 '어두운 화면'
+    # 카메라 줌(첫·끝 프레임 배율)이 이 범위를 벗어나면 '카메라가 다가가거나 멀어졌어요' — 장면 줄이 카메라 움직임을 원할 때는 재지 않는다.
+    # 일치도가 MIN_MATCH보다 낮으면(화면이 통째로 바뀜) 잰 배율을 믿지 않는다. 2026-11-06 실측: 고정 컷 1.0~1.04, 분명한 줌 1.24~1.38, 물체가 다가오며 살짝 다가간 컷 1.12~1.16(넘어감)
+    AUTO_REVIEW_ZOOM_IN = float(os.getenv("AUTO_REVIEW_ZOOM_IN", "1.18"))
+    AUTO_REVIEW_ZOOM_OUT = float(os.getenv("AUTO_REVIEW_ZOOM_OUT", "0.85"))
+    AUTO_REVIEW_ZOOM_MIN_MATCH = float(os.getenv("AUTO_REVIEW_ZOOM_MIN_MATCH", "0.5"))
+    END_CARD_FONT = os.getenv("END_CARD_FONT", "C:/Windows/Fonts/malgunbd.ttf")  # 엔딩 카드 문구 글꼴 (한글)
+    CAMERA_LOCK_DEFAULT = _bool("CAMERA_LOCK_DEFAULT", True)  # 장면 줄에 카메라 움직임이 없으면 고정 카메라를 붙인다 (camera.py)
+    # 자동 움직임 경로 (auto_motion.py) — 차 이동·집어 올리기처럼 방향·접촉이 필요한 장면에 26B가 찾은 위치로 Motion Control 경로를 붙인다.
+    # 26B 비전(REFINE_LLAMA_MMPROJ)과 ComfyUI-LTXVideo·움직임 LoRA가 있을 때만 동작, 없으면 그냥 I2V
+    AUTO_MOTION = _bool("AUTO_MOTION", True)
+    # 본인 얼굴 합성 (pipeline/face.py) — insightface inswapper(비상업 연구용 라이선스)를 따로 만든 가상환경에서 돌린다.
+    # 둘 다 비우면 얼굴 사진 기능이 꺼진다. 예: D:\capstone\tools\faceswap\venv\Scripts\python.exe / ...\faceswap\swap.py
+    FACESWAP_PYTHON = os.getenv("FACESWAP_PYTHON", "")
+    FACESWAP_SCRIPT = os.getenv("FACESWAP_SCRIPT", "")
+    FACESWAP_TIMEOUT_SEC = int(os.getenv("FACESWAP_TIMEOUT_SEC", "180"))
     COMFYUI_POLL_INTERVAL_SEC = float(os.getenv("COMFYUI_POLL_INTERVAL_SEC", "2"))
     COMFYUI_SHOT_TIMEOUT_SEC = int(os.getenv("COMFYUI_SHOT_TIMEOUT_SEC", "900"))
     COMFYUI_SIZE_MULTIPLE = int(os.getenv("COMFYUI_SIZE_MULTIPLE", "64"))
@@ -108,7 +142,12 @@ class Config:
     STORYBOARD_APPEND_NOTES = _bool("STORYBOARD_APPEND_NOTES", True)  # 피드백 요지를 재생성 장면 프롬프트에 덧붙임
 
     # 내레이션(해설 음성) — 프롬프트 문서의 [내레이션] 섹션을 TTS로 합성해 러프컷 위에 얹는다
-    # 배경음악 — ComfyUI + MiniMax Music 3 (pipeline/music.py). 모델 파일은 ComfyUI 모델 폴더에 있어야 한다.
+    # 배경음악 — ComfyUI 로컬 음악 모델 (pipeline/music.py). 모델 파일은 ComfyUI 모델 폴더에 있어야 한다.
+    # 기본 stable_audio (2026-11-05 비교에서 사용자가 고름). minimax는 곡에 다른 소리가 섞여 기본에서 뺐다
+    MUSIC_ENGINE = os.getenv("MUSIC_ENGINE", "stable_audio")
+    STABLE_AUDIO_CHECKPOINT = os.getenv("STABLE_AUDIO_CHECKPOINT", "stable_audio_3_medium.safetensors")
+    STABLE_AUDIO_TEXT_ENCODER = os.getenv("STABLE_AUDIO_TEXT_ENCODER", "t5gemma_b_b_ul2.safetensors")
+    STABLE_AUDIO_STEPS = int(os.getenv("STABLE_AUDIO_STEPS", "8"))
     MUSIC_DIT = os.getenv("MUSIC_DIT", "minimax_music3_dit_fp16.safetensors")
     MUSIC_TEXT_ENCODER = os.getenv("MUSIC_TEXT_ENCODER", "minimax_music3_text_encoder_pruned_bf16.safetensors")
     MUSIC_VAE = os.getenv("MUSIC_VAE", "minimax_music3_dav.safetensors")
@@ -165,6 +204,11 @@ class Config:
     REFINE_LLAMA_SERVER = os.getenv("REFINE_LLAMA_SERVER", "")  # llama-server.exe 경로 (Ollama 설치 폴더 lib/ollama)
     REFINE_LLAMA_MODEL = os.getenv("REFINE_LLAMA_MODEL", "")    # .gguf (Ollama blobs의 모델 파일)
     REFINE_LLAMA_ARGS = os.getenv("REFINE_LLAMA_ARGS", "-ngl 99 --n-cpu-moe 12 -c 4096 --jinja")
+    # 이미지 입력(비전) 파일 — Ollama blobs의 projector 층. 주면 AI 점검·원칙 질문 등도 26B가 이미지를 보고 한다
+    REFINE_LLAMA_MMPROJ = os.getenv("REFINE_LLAMA_MMPROJ", "")
+    # llama-server의 GPU 라이브러리 폴더 — 비우면 llama-server 옆의 cuda_v13·cuda_v12를 찾는다.
+    # 2026-11-06: 이 폴더를 못 찾으면 'no usable GPU found'로 CPU에서 돌았다
+    REFINE_LLAMA_LIB_DIR = os.getenv("REFINE_LLAMA_LIB_DIR", "")
     REFINE_LLM_START_TIMEOUT_SEC = int(os.getenv("REFINE_LLM_START_TIMEOUT_SEC", "180"))
     REFINE_LLM_TIMEOUT_SEC = int(os.getenv("REFINE_LLM_TIMEOUT_SEC", "300"))
 
@@ -179,20 +223,6 @@ class Config:
     MOCK_DELAY_SEC = float(os.getenv("MOCK_DELAY_SEC", "0"))  # mock 장면당 인위적 지연(진행 표시 확인용)
     JOBS_SYNC = _bool("JOBS_SYNC", False)  # true면 작업 큐 없이 요청 안에서 바로 실행(테스트용)
 
-    # ── 상용 API (품질 부족 장면 재생성) ──
-    COMMERCIAL_VIDEO_ADAPTER = os.getenv("COMMERCIAL_VIDEO_ADAPTER", "runway")
-    RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY", "")
-    RUNWAY_API_BASE = os.getenv("RUNWAY_API_BASE", "https://api.dev.runwayml.com/v1")
-    RUNWAY_API_VERSION = os.getenv("RUNWAY_API_VERSION", "2024-11-06")
-    RUNWAY_MODEL = os.getenv("RUNWAY_MODEL", "gen4_turbo")            # image_to_video용
-    RUNWAY_T2V_MODEL = os.getenv("RUNWAY_T2V_MODEL", "gen4.5")        # text_to_video용
-    RUNWAY_RATIO = os.getenv("RUNWAY_RATIO", "720:1280")                    # 세로 9:16
-    RUNWAY_RATIO_LANDSCAPE = os.getenv("RUNWAY_RATIO_LANDSCAPE", "1280:720")  # 가로 16:9
-    RUNWAY_RATIO_SQUARE = os.getenv("RUNWAY_RATIO_SQUARE", "960:960")          # 정사각 1:1
-    RUNWAY_POLL_INTERVAL_SEC = float(os.getenv("RUNWAY_POLL_INTERVAL_SEC", "5"))
-    RUNWAY_TIMEOUT_SEC = int(os.getenv("RUNWAY_TIMEOUT_SEC", "600"))
-    COMMERCIAL_COST_PER_SEC_USD = float(os.getenv("COMMERCIAL_COST_PER_SEC_USD", "0.12"))
-    COMMERCIAL_BUDGET_USD = float(os.getenv("COMMERCIAL_BUDGET_USD", "30"))
 
     # 개발용 파이프라인 점검 페이지 (/dev/pipeline-test) — 로컬 전용, 배포 시 false
     DEV_TEST_PAGE = _bool("DEV_TEST_PAGE", True)

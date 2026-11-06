@@ -1,8 +1,7 @@
-"""테스트용 가짜 ComfyUI 서버 + 가짜 상용 API(Runway) HTTP.
+"""테스트용 가짜 ComfyUI 서버.
 
 실제 GPU·모델·API 키 없이 어댑터의 업로드·제출·대기·다운로드 흐름과 워크플로 값 주입을 검증한다.
 - FakeComfyUI: /system_stats, /upload/image, /prompt, /history/<id>, /view, /free
-- FakeRunwayHTTP: requests 대용 객체 (post/get) — 실제 외부 호출은 하지 않는다
 """
 import base64
 import json
@@ -79,7 +78,9 @@ class FakeComfyUI:
                     if name in outer.missing_nodes:
                         return self._json({})
                     return self._json({name: {"input": {"required": {"lora_name": ["COMBO", {"options": [
-                        "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors"]}]}}}})
+                        "ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors",
+                        "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+                        "qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors"]}]}}}})
                 if path == "/queue":
                     pending = [[0, pid] for pid, j in outer._jobs.items()
                                if not j[3] and time.time() - j[0] < outer.result_delay]
@@ -142,21 +143,3 @@ class _Resp:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
-
-class FakeRunwayHTTP:
-    """상용 API 테스트 더블. 호출 내역(requests)을 기록한다."""
-
-    def __init__(self, sample_mp4):
-        self._video = Path(sample_mp4).read_bytes()
-        self.requests = []
-        self._tasks = 0
-
-    def post(self, url, json=None, headers=None, timeout=None):
-        self.requests.append({"url": url, "body": json, "headers": headers})
-        self._tasks += 1
-        return _Resp({"id": f"task-{self._tasks}"})
-
-    def get(self, url, headers=None, timeout=None):
-        if "/tasks/" in url:
-            return _Resp({"status": "SUCCEEDED", "output": ["http://fake.invalid/out.mp4"]})
-        return _Resp(content=self._video)

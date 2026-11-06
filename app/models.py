@@ -48,6 +48,15 @@ class PipelineSession(db.Model):
     # 그 차수에서 '제작 시작'을 누르면 만들지 않고 replay_round_id 버전의 결과를 바로 쓰고, 'YouTube에 올리기'는 이미 올린 영상에 연결한다
     demo_json = db.Column(db.Text, default="")
     voice_json = db.Column(db.Text, default="")  # 내레이션 목소리·말투 (pipeline/voice.py) — 모든 버전 공통
+    # AI 자동 진행 (pipeline/auto_pipeline.py): 기획·이미지·컷·러프컷을 AI가 점검하며 끝까지 만들고 사람은 마지막에 한 번만 본다
+    auto_mode = db.Column(db.Boolean, default=False)
+    # AI에게 맡기기 화면의 입력 {"idea", "answers", "assumptions"} — 기획 단계 작업이 읽는다
+    intake_json = db.Column(db.Text, default="")
+    face_path = db.Column(db.String(500), default="")  # 본인 얼굴 사진 — 사람이 나오는 장면 첫 프레임을 그 사람으로 (Qwen)
+    # 물건·장소 참조 사진 (pipeline/ref_photos.py) [{"path", "name", "kind", "en"}] — 장면에 그 이름이 나오면 함께 참조
+    refs_json = db.Column(db.Text, default="")
+    # 장면 사진 (pipeline/photo_scenes.py) [{"path", "caption"}] — 순서대로 장면 하나씩, 사진 자체가 첫 프레임 (사진 → 영상)
+    photos_json = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     rounds = db.relationship(
@@ -94,8 +103,17 @@ class VideoRound(db.Model):
     edit_note = db.Column(db.Text, default="")       # 편집 설정을 다 적용하지 못한 사유 (예: 자막 글꼴 없음)
     music_json = db.Column(db.Text, default="")      # 배경음악 설정·곡 파일 (pipeline/bgm.py) — 다음 버전에 이어진다
     video_approved =db.Column(db.Boolean, default=False)
+    # AI 자동 진행 기록 {"phase", "log": [...], "flagged": [shot_id], "assumptions": [...]} (pipeline/auto_pipeline.py)
+    auto_json = db.Column(db.Text, default="")
 
-    feedbacks = db.relationship("Feedback", backref="round", cascade="all, delete-orphan")
+    @property
+    def auto_data(self):
+        try:
+            return json.loads(self.auto_json) if self.auto_json else {}
+        except ValueError:
+            return {}
+
+    feedbacks =db.relationship("Feedback", backref="round", cascade="all, delete-orphan")
     clusters = db.relationship(
         "ClusterResult", backref="round", order_by="ClusterResult.rank",
         cascade="all, delete-orphan",
@@ -295,7 +313,16 @@ class ShotRender(db.Model):
     elapsed_sec = db.Column(db.Float, default=0.0)
     peak_vram_mb = db.Column(db.Float, default=0.0)
     reused_from_id = db.Column(db.Integer, db.ForeignKey("shot_render.id"), nullable=True)
+    # AI 점검 결과 (pipeline/auto_review.py) {"image": {...}, "clip": {...}} — 각 {"passed", "score", "problems", "fix"}
+    review_json = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def review(self):
+        try:
+            return json.loads(self.review_json) if self.review_json else {}
+        except ValueError:
+            return {}
 
     @property
     def quality_flags(self):

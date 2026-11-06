@@ -15,7 +15,7 @@ from ..models import (
     ClusterResult, Feedback, GenerationJob, GlobalTechnicalSetting, Metric, PipelineSession, PromptVersion,
     ShotRender, VideoRound, db,
 )
-from ..pipeline import approval, orchestrator, quality_gate, storyboard_import, youtube_client
+from ..pipeline import approval, orchestrator, storyboard_import, youtube_client
 from ..pipeline.classifier import create_classifier
 from ..pipeline.metrics import calculate_metrics
 from ..pipeline.orchestrator import InvalidTransition, PipelineError
@@ -172,20 +172,13 @@ def _delete_session(session):
         shutil.rmtree(d, ignore_errors=True)
 
 
-_GENRE_HINTS = [  # 첫 화면 문장 → 영상 종류(GENRES) 추천. AI 자동 채우기 전까지 쓰는 간단한 규칙, 앞에서부터 맞춘다
-    (r"뮤직\s*비디오|MV|노래", "뮤직비디오"), (r"단편|드라마|영화|이야기", "단편 영화"),
-    (r"브이로그|일상|여행", "브이로그"), (r"설명|사용법|조립|강의|튜토리얼|교육", "교육·설명"),
-    (r"제품|신제품|출시|광고", "홍보·광고"), (r"학과|학교|대학|입학|캠퍼스|축제|행사|박람회|소개|안내", "소개·안내"),
-    (r"홍보", "홍보·광고"),
-]
-
-
 def _suggest_from_idea(idea):
-    """첫 화면에서 적은 문장으로 제목·종류를 추천한다. 사용자가 세부사항 화면에서 고친다."""
+    """첫 화면에서 적은 문장으로 제목·종류를 추천한다 (종류 규칙은 intake.GENRE_HINTS). 사용자가 세부사항 화면에서 고친다."""
+    from ..pipeline import intake
+
     first = re.split(r"[\n.!?]", idea.strip(), maxsplit=1)[0].strip()
     title = first if len(first) <= 28 else first[:28].rsplit(" ", 1)[0] + "…"
-    genre = next((g for pattern, g in _GENRE_HINTS if re.search(pattern, idea, re.I)), "")
-    return title, genre
+    return title, intake.guess_genre(idea)
 
 
 @bp.route("/session/create", methods=["GET", "POST"])
@@ -249,6 +242,172 @@ def create():
         orchestrator.start_generation(round_obj, current_app.config)
         return _back(session.id, "produce")
     return _back(session.id, "plan")  # 기획 저장 → 프로젝트의 ① 기획 탭에서 이어서 고친다
+
+
+# ── AI에게 맡기기: 설명 → 부족한 것만 질문 → AI가 끝까지 만들고 사람은 ③ 확인에서 한 번만 본다 ─────
+_FACE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+@bp.route("/session/new")
+def new():
+    """첫 화면 다음: 질문·가정 화면. 질문은 화면이 /session/new/analyze로 받아 온다 (LLM이 몇 초 걸린다)."""
+    from ..pipeline import face
+
+    idea = request.args.get("idea", "").strip()[:2000]
+    if not idea:
+        return redirect(url_for("session.home"))
+    aspect = request.args.get("aspect", "")
+    return render_template("session/intake.html", idea=idea, aspect=aspect if aspect in ASPECTS else "9:16",
+                           face_available=face.available(current_app.config) or (  # Qwen 그리기 또는 inswapper 합성
+                               Path(current_app.config["COMFYUI_WORKFLOWS_DIR"])
+                               / f"{current_app.config.get('COMFYUI_WORKFLOW_FACE', 'qwen_face_t2i')}.json").exists())
+
+
+@bp.route("/session/new/analyze", methods=["POST"])
+def new_analyze():
+    """설명 → 부족한 정보 질문 + 기본값 가정 (저장하지 않음)."""
+    from ..pipeline import intake
+
+    body = request.get_json(silent=True) or {}
+    idea = str(body.get("idea") or "").strip()[:2000]
+    if not idea:
+        return _error("만들고 싶은 영상을 먼저 적어 주세요.", 400)
+    return jsonify(intake.analyze(idea, current_app.config, aspect=str(body.get("aspect") or ""),
+                                  genres=GENRES, ask_llm=body.get("ask_llm", True) is not False))
+
+
+@bp.route("/session/auto", methods=["POST"])
+def auto_create():
+    """AI에게 맡기기: 프로젝트를 만들고 AI 기획 작업을 건다 (기획이 끝나면 생성·점검·러프컷까지 이어진다)."""
+    from ..pipeline import auto_pipeline, intake
+
+    idea = request.form.get("idea", "").strip()[:2000]
+    if not idea:
+        flash("만들고 싶은 영상을 적어 주세요.", "warning")
+        return redirect(url_for("session.home"))
+    questions = [k for k in request.form if k.startswith("question_")]
+    qa = [(request.form[k].strip(), request.form.get("answer_" + k[len("question_"):], "").strip())
+          for k in sorted(questions)]
+    from ..pipeline import plan_rules
+    rule_keys = [k for k in request.form if k.startswith("rule_question_")]  # 제작 원칙 질문의 답 → 이 프로젝트의 원칙
+    rules = plan_rules.from_answers(
+        [(request.form[k], request.form.get("rule_answer_" + k[len("rule_question_"):], "")) for k in sorted(rule_keys)])
+    genre = request.form.get("genre", "").strip()
+    genre = genre if genre in GENRES else intake.guess_genre(idea)
+    aspect = request.form.get("aspect", "9:16")
+    aspect = aspect if aspect in ASPECTS else "9:16"
+    try:
+        seconds = int(float(request.form.get("seconds") or intake.DEFAULT_SECONDS))
+    except ValueError:
+        seconds = intake.DEFAULT_SECONDS
+    seconds = max(5, min(seconds, 120))
+    choice = {"genre": genre, "seconds": seconds, "aspect": aspect,
+              "narration": "off" if request.form.get("narration") == "off" else "on",
+              "music": "off" if request.form.get("music") == "off" else "on"}
+    shown = [f"영상 종류: {genre or '정하지 않음'}", f"길이: {seconds}초", f"화면 비율: {intake.ASPECT_LABELS[aspect]}",
+             "내레이션: " + ("없이" if choice["narration"] == "off" else "넣기"),
+             "배경음악: " + ("없이" if choice["music"] == "off" else "넣기")]
+    shown += [f"{q} → {a}" for q, a in qa if a]
+    shown += [f"제작 원칙: {r}" for r in rules]
+
+    title, _genre = _suggest_from_idea(idea)
+    session = PipelineSession(title=title or "새 영상", genre=genre, aspect_ratio=aspect, auto_mode=True,
+                              intake_json=json.dumps({"idea": idea, "qa": qa, "rules": rules, "assumptions": choice,
+                                                      "shown": shown},
+                                                     ensure_ascii=False))
+    db.session.add(session)
+    db.session.flush()
+    photo = request.files.get("face")
+    if photo and photo.filename:
+        ext = os.path.splitext(photo.filename)[1].lower()
+        if ext not in _FACE_EXTS:
+            db.session.rollback()
+            flash("얼굴 사진은 JPG·PNG·WEBP만 올릴 수 있습니다.", "warning")
+            return redirect(url_for("session.new", idea=idea, aspect=aspect))
+        folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
+        os.makedirs(folder, exist_ok=True)
+        session.face_path = os.path.join(folder, "face" + ext)
+        photo.save(session.face_path)
+    from ..pipeline import bgm
+    song = request.files.get("music_file")  # 배경음악 파일 (없으면 AI가 만든다)
+    if song and song.filename:
+        ext = os.path.splitext(song.filename)[1].lower()
+        if ext not in bgm.MUSIC_EXTS:
+            db.session.rollback()
+            flash("배경음악은 MP3·WAV·FLAC·M4A·AAC·OGG만 올릴 수 있습니다.", "warning")
+            return redirect(url_for("session.new", idea=idea, aspect=aspect))
+        folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
+        os.makedirs(folder, exist_ok=True)
+        song_path = os.path.join(folder, "music" + ext)
+        song.save(song_path)
+        shown = [("배경음악: 올린 곡 (" + os.path.basename(song.filename)[:60] + ")") if line.startswith("배경음악:")
+                 else line for line in shown]
+        session.intake_json = json.dumps({**json.loads(session.intake_json), "music_file": song_path,
+                                          "assumptions": {**choice, "music": "on"}, "shown": shown},
+                                         ensure_ascii=False)
+    # 물건·장소 참조 사진 여러 장 (이름·종류와 짝) — 장면에 그 이름이 나오면 함께 보고 그린다
+    from ..pipeline import ref_photos
+    refs = []
+    for i, (f, name, kind) in enumerate(zip(request.files.getlist("ref_file"), request.form.getlist("ref_name"),
+                                            request.form.getlist("ref_kind"))):
+        if not f or not f.filename or len(refs) >= ref_photos.MAX_PHOTOS:
+            continue
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in _FACE_EXTS:
+            db.session.rollback()
+            flash("참조 사진은 JPG·PNG·WEBP만 올릴 수 있습니다.", "warning")
+            return redirect(url_for("session.new", idea=idea, aspect=aspect))
+        folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"ref_{i + 1}{ext}")
+        f.save(path)
+        refs.append({"path": path, "name": (name or "").strip()[:60] or os.path.splitext(f.filename)[0][:60],
+                     "kind": kind if kind in ref_photos.KINDS else "object", "en": ""})
+    ref_photos.save(session, refs)
+    # 장면 사진 (사진 → 영상): 올린 순서대로 장면 하나씩, 사진 자체가 첫 프레임
+    from ..pipeline import photo_scenes
+    photos = []
+    for i, (f, caption) in enumerate(zip(request.files.getlist("photo_file"), request.form.getlist("photo_caption"))):
+        if not f or not f.filename or len(photos) >= photo_scenes.MAX_PHOTOS:
+            continue
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in _FACE_EXTS:
+            db.session.rollback()
+            flash("장면 사진은 JPG·PNG·WEBP만 올릴 수 있습니다.", "warning")
+            return redirect(url_for("session.new", idea=idea, aspect=aspect))
+        folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"photo_{i + 1}{ext}")
+        f.save(path)
+        photos.append({"path": path, "caption": (caption or "").strip()[:200]})
+    photo_scenes.save(session, photos)
+    if photos:
+        shown.append(f"장면 사진 {len(photos)}장 — 사진 하나가 장면 하나, 사진 그대로 움직여요")
+    if refs:
+        shown.append("참조 사진: " + ", ".join(r["name"] for r in refs))
+    if refs or photos:
+        session.intake_json = json.dumps({**json.loads(session.intake_json), "shown": shown}, ensure_ascii=False)
+    from ..pipeline.prompt_builder import render_sections
+    placeholder = render_sections({"프로젝트": session.title, "영상 종류": genre, "영상 설명": idea})
+    round_obj = VideoRound(session_id=session.id, round_number=1, prompt_text=placeholder)
+    db.session.add(round_obj)
+    db.session.commit()
+    auto_pipeline.start(round_obj)
+    return _back(session.id, "produce")
+
+
+@bp.route("/session/<int:session_id>/auto/plan", methods=["POST"])
+def auto_replan(session_id):
+    """AI 기획이 실패·중단된 프로젝트를 다시 AI에게 맡긴다 (① 기획 단계에서만)."""
+    from ..pipeline import auto_pipeline
+
+    session = _get_session(session_id)
+    round_obj = session.current_round
+    if not session.auto_mode or round_obj.status != "prompt_built" or _is_busy(session):
+        flash("지금은 AI에게 다시 맡길 수 없습니다.", "warning")
+        return _back(session_id)
+    auto_pipeline.start(round_obj)
+    return _back(session_id, "produce")
 
 
 @bp.route("/session/draft/fill", methods=["POST"])
@@ -432,8 +591,14 @@ def detail(session_id):
     edit_source = storyboard.get("edit") if storyboard else edit_plan.loads(round_obj.edit_json or "")
     rough_running = round_obj.status == "generating" and orchestrator.rough_cut_in_progress(round_obj)
     stage = _stage_of(round_obj, rough_running)
+    auto = None
+    if session.auto_mode:  # AI 자동 진행 기록·장면별 점검 결과
+        from ..pipeline import auto_pipeline
+        auto = auto_pipeline.summary(round_obj)
+        auto["planning"] = auto_pipeline.planning(round_obj)
+        auto["message"] = round_obj.video_job_message or ""
     return render_template(
-        "session/detail.html", session=session, round=round_obj, feedbacks=feedbacks,
+        "session/detail.html", auto=auto, session=session, round=round_obj, feedbacks=feedbacks,
         stage=stage, stages=_stage_tabs(stage, round_obj), plan=_plan_view(session, round_obj),
         narration_report=orchestrator._narration_status(round_obj), narration_rows=_narration_rows(round_obj),
         narration_editable=(round_obj.id == session.current_round.id and round_obj.status in NARRATION_EDITABLE),
@@ -517,7 +682,9 @@ def _plan_view(session, round_obj):
         "shots": lines, "style": style, "style_ko": ko.get(translate.key(style), "") if style else "",
         "narration": [narration[k] for k in sorted(narration)],
         "applied": sections.get("시청자 반영 사항", ""), "directions": sections.get("연출 지침", ""),
-        "editable": round_obj.id == session.current_round.id and round_obj.status == "prompt_built",
+        "editable": (round_obj.id == session.current_round.id and round_obj.status == "prompt_built"
+                     and not _is_busy(session)),  # AI가 기획하는 중에는 고치지 않는다
+        "auto_planning": _is_busy(session) and round_obj.status == "prompt_built",
         "producing": (round_obj.id == session.current_round.id and round_obj.status in orchestrator.PLAN_EDITABLE
                       and not _is_busy(session)),
         "replannable": (round_obj.id == session.current_round.id and round_obj.adapter_used != "import"
@@ -747,7 +914,9 @@ def _decorate_view(session, round_obj):
     storyboard = round_obj.storyboard_data
     has_text = bool(storyboard and any((s.get("narration") or s.get("subtitle") or "").strip()
                                        for s in storyboard["shots"])) or "[내레이션]" in (round_obj.prompt_text or "")
+    end_card = overlay.load_end_card(session)
     return {"logo": logo, "has_logo_file": has_file, "frame": _preview_frame(session, round_obj, storyboard),
+            "end_card": end_card,
             "logo_url": url_for("session.logo_image", session_id=session.id) if has_file else "",
             "plan": plan, "has_text": has_text, "editable": round_obj.status in orchestrator.BEFORE_UPLOAD,
             "can_rebuild": round_obj.status == "video_ready" and not orchestrator.upload_in_progress(round_obj),
@@ -756,6 +925,8 @@ def _decorate_view(session, round_obj):
             "music": music, "music_ready": bool(music["file"] and os.path.exists(music["file"])),
             "music_placeholder": bgm.template_caption(sections.get("영상 종류", ""), sections.get("영상 설명", "")),
             "summary": [line for line in [overlay.describe_logo(logo)] if line]
+                       + ([f"엔딩 카드 {end_card['seconds']:g}초" + (f" · 끝 페이드 {end_card['fade_sec']:g}초" if end_card["fade_sec"] else "")]
+                          if end_card["enabled"] else [])
                        + [line for line in edit_plan.describe(plan, storyboard) if line.startswith("자막")],
             "sound": _sound_view(session, round_obj, plan, storyboard, music),
             "timeline": _timeline_view(round_obj, logo, has_file),
@@ -858,6 +1029,7 @@ def _scene_cards(round_obj):
                       "image": images.get(shot_id), "comments": comments,
                       "notes": shot.get("notes") or [],
                       "motion": shot.get("motion"),
+                      "reference": shot.get("reference"),
                       "prompt_fixed": shot.get("prompt_fixed") or "",  # 의견대로 고쳐 써서 실제로 모델에 넣은 묘사
                       "image_prompt_fixed": shot.get("image_prompt_fixed") or "",  # 첫 프레임(동작 시작 전) 묘사
                       "versions": [r for r in round_obj.shot_renders
@@ -1032,6 +1204,39 @@ def shot_motion(round_id, shot_id):
     return jsonify(state=round_obj.status, **result)
 
 
+@bp.route("/api/rounds/<int:round_id>/shots/<shot_id>/reference", methods=["POST"])
+def shot_reference(round_id, shot_id):
+    """참조 영상 붙이기(multipart 'video', 선택 'first_frame'=1) 또는 떼기('clear'=1).
+    붙이면 그 영상의 동작·구도를 따라 컷을 만든다 (유니언 컨트롤). JSON {"state", "changed", "regenerating"}."""
+    import tempfile
+
+    from ..pipeline import reference_video
+
+    round_obj = _get_round(round_id)
+    try:
+        if request.form.get("clear"):
+            result = orchestrator.set_shot_reference(current_app._get_current_object(), round_obj, shot_id, None,
+                                                     current_app.config)
+            return jsonify(state=round_obj.status, **result)
+        video = request.files.get("video")
+        if not video or not video.filename:
+            return _error("참조 영상 파일을 골라 주세요.", 400)
+        ext = os.path.splitext(video.filename)[1].lower()
+        if ext not in reference_video.VIDEO_EXTS:
+            return _error("참조 영상은 MP4·MOV·WEBM·MKV만 올릴 수 있습니다.", 400)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "upload" + ext)
+            video.save(path)
+            if os.path.getsize(path) > reference_video.MAX_BYTES:
+                return _error("참조 영상이 너무 큽니다 (300MB까지).", 400)
+            result = orchestrator.set_shot_reference(
+                current_app._get_current_object(), round_obj, shot_id, path, current_app.config,
+                name=video.filename, first_frame=request.form.get("first_frame") == "1")
+    except PipelineError as exc:
+        return _error(str(exc), 409)
+    return jsonify(state=round_obj.status, **result)
+
+
 @bp.route("/api/motion/presets")
 def motion_presets():
     from ..pipeline import motion_tracks
@@ -1148,20 +1353,6 @@ def round_approve_video(round_id):
     return jsonify(state=round_obj.status)
 
 
-@bp.route("/api/rounds/<int:round_id>/escalate", methods=["POST"])
-def round_escalate(round_id):
-    round_obj = _get_round(round_id)
-    body = request.get_json(silent=True) or {}
-    try:
-        cost, _job = orchestrator.start_escalation(
-            round_obj, body.get("shot_ids") or [], body.get("flags") or {},
-            body.get("confirm_cost_usd"), current_app.config,
-            http=current_app.config.get("_COMMERCIAL_HTTP"))
-    except quality_gate.EscalationError as exc:
-        return _error(str(exc), exc.http_status, code=exc.code, **exc.extra)
-    return jsonify(state=db.session.get(VideoRound, round_id).status, cost_usd=cost)
-
-
 @bp.route("/api/shots/<int:render_id>/select", methods=["POST"])
 def shot_select(render_id):
     render = db.session.get(ShotRender, render_id)
@@ -1270,7 +1461,12 @@ def decorate(session_id):
             data, ext = png, ".png"
             flash("벡터 로고를 투명 배경 PNG로 바꿔 넣었습니다.", "success")
         (folder / f"logo{ext}").write_bytes(data)
-        logo["file"], logo["enabled"] = f"logo{ext}", True
+        # 엔딩 카드에 로고를 넣기로 했으면 카드에만 넣는다 — 영상 위(모서리)에도 겹쳐 얹지 않는다 (2026-11-06 사용자)
+        card_now = overlay.load_end_card(session)
+        on_card = card_now["enabled"] and card_now["logo"]
+        logo["file"], logo["enabled"] = f"logo{ext}", not on_card
+        if on_card:
+            flash("로고를 엔딩 카드에 맞춰 넣었습니다. 영상 위에도 보이게 하려면 '로고 넣기'를 켜세요.", "success")
     elif request.form.get("logo_settings"):  # 체크 해제는 폼에 값이 오지 않는다
         logo["enabled"] = request.form.get("logo_enabled") == "on"
 
@@ -1297,7 +1493,16 @@ def decorate(session_id):
         if start is not None and end - start >= 0.1:
             logo.update(show="range", start_sec=round(start, 2),
                         end_sec=0.0 if total and end >= total - 0.05 else round(end, 2))
-    session.brand_json = json.dumps(overlay.normalize_logo(logo), ensure_ascii=False)
+    end_card = overlay.load_end_card(session)
+    if request.form.get("end_card_settings"):  # 엔딩 카드 · 끝 페이드아웃 (체크 해제는 폼에 값이 오지 않는다)
+        end_card.update(enabled=request.form.get("end_card_enabled") == "on",
+                        logo=request.form.get("end_card_logo") == "on",
+                        narration=request.form.get("end_card_narration") == "on",
+                        seconds=request.form.get("end_card_seconds", end_card["seconds"]),
+                        fade_sec=request.form.get("end_card_fade_sec", end_card["fade_sec"]),
+                        color=request.form.get("end_card_color", end_card["color"]),
+                        text=request.form.get("end_card_text", end_card["text"]))
+    session.brand_json = overlay.brand_dumps(logo, end_card)
     db.session.commit()
 
     if request.form.get("music_settings"):
@@ -1310,6 +1515,19 @@ def decorate(session_id):
         music["enabled"] = request.form.get("music_enabled") == "on"
         music["caption"] = request.form.get("music_caption", music["caption"])
         music["volume"] = pct("music_volume", music["volume"])
+        song = request.files.get("music_upload")
+        if song and song.filename:  # 사용자 곡으로 바꾸기 (만들지 않고 이 곡을 쓴다)
+            ext = os.path.splitext(song.filename)[1].lower()
+            if ext not in bgm.MUSIC_EXTS:
+                flash("배경음악은 MP3·WAV·FLAC·M4A·AAC·OGG만 올릴 수 있습니다.", "warning")
+                return _back(session_id, tab)
+            folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, f"music_r{round_obj.round_number}{ext}")
+            song.save(path)
+            music.update(enabled=True, uploaded=path, file="", key="")
+        elif request.form.get("music_upload_clear") == "on":  # 올린 곡을 빼고 AI가 만든 곡으로
+            music.update(uploaded="", file="", key="", seconds=0.0)
         if request.form.get("music_reroll") == "on":  # 같은 설명으로 다른 곡
             music.update(seed=0, file="", key="", seconds=0.0)
         if request.form.get("music_suggest"):

@@ -1,11 +1,13 @@
-"""[팀 직접 구현] 배경음악 생성 — ComfyUI + MiniMax Music 3 (로컬).
+"""[팀 직접 구현] 배경음악 생성 — ComfyUI 로컬 음악 모델.
 
-워크플로는 ComfyUI 블루프린트 'Text to Music (MiniMax Music 3)'과 같은 구성이다.
-  CLIPLoader(minimax) → MiniMaxMusic3TextEncode → KSampler(euler/simple, 30스텝, cfg 1.7)
-  → VAEDecodeAudioTiled → SaveAudio
-품질 우선으로 텍스트 인코더는 블루프린트 기본(int8) 대신 bf16(pruned)을 쓴다 (MUSIC_TEXT_ENCODER).
-연주곡은 가사 칸에 섹션 태그만 넣고([Intro] [Instrumental] … [Outro]) 설명에 'no vocals'를 적는다.
-라이선스: MiniMax-Music3 Community License — 상업 서비스는 화면에 'MiniMax-Music3' 표기 필요.
+엔진은 MUSIC_ENGINE으로 고른다 (기본 stable_audio).
+  stable_audio  Stable Audio 3 Medium. 블루프린트 'Audio Generation (Stable Audio 3 Medium)'의 경로에서
+                다시 쓰기(Qwen) 단계를 뺀 구성: t5gemma 인코딩 → KSampler(lcm/simple, 8스텝, cfg 1) → VAEDecodeAudio.
+                2026-11-05 같은 프롬프트 비교에서 사용자가 골랐다 — 피아노 한 대로 느리고 잔잔하게 나왔다.
+                라이선스: Stability AI Community License (연매출 100만 달러 미만 무료, 'Powered by Stability AI' 표기).
+  minimax       MiniMax Music 3 ('Text to Music (MiniMax Music 3)' 블루프린트 구성). 비교에서 곡에 다른 소리가 섞여
+                기본에서 뺐다. 라이선스: MiniMax-Music3 Community License ('MiniMax-Music3' 표기).
+LTX 소리 모델도 비교했지만 피아노 여러 대가 동시에 치는 소리처럼 들려 쓰지 않는다.
 """
 import random
 from pathlib import Path
@@ -13,9 +15,17 @@ from pathlib import Path
 from .video_generator.comfyui.comfy_client import ComfyClient
 
 INSTRUMENTAL_LYRICS = "[Intro]\n\n[Instrumental]\n\n[Outro]"
+ENGINES = ("stable_audio", "minimax")
+CREDITS = {"stable_audio": "배경음악: Stable Audio 3 Medium으로 생성 (Powered by Stability AI)",
+           "minimax": "배경음악: MiniMax-Music3로 생성"}
 
 
-def workflow(config, caption, seconds, seed, lyrics=INSTRUMENTAL_LYRICS, prefix="recut/bgm"):
+def engine(config):
+    name = str(config.get("MUSIC_ENGINE") or "stable_audio").lower()
+    return name if name in ENGINES else "stable_audio"
+
+
+def _minimax_workflow(config, caption, seconds, seed, lyrics, prefix):
     return {
         "3": {"class_type": "CLIPLoader", "inputs": {
             "clip_name": config["MUSIC_TEXT_ENCODER"], "type": "minimax", "device": "default"}},
@@ -36,6 +46,29 @@ def workflow(config, caption, seconds, seed, lyrics=INSTRUMENTAL_LYRICS, prefix=
     }
 
 
+def _stable_audio_workflow(config, caption, seconds, seed, prefix):
+    return {
+        "25": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": config["STABLE_AUDIO_CHECKPOINT"]}},
+        "26": {"class_type": "CLIPLoader", "inputs": {
+            "clip_name": config["STABLE_AUDIO_TEXT_ENCODER"], "type": "stable_audio", "device": "default"}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["26", 0], "text": caption}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["26", 0], "text": ""}},
+        "11": {"class_type": "EmptyLatentAudio", "inputs": {"seconds": float(seconds), "batch_size": 1}},
+        "3": {"class_type": "KSampler", "inputs": {
+            "model": ["25", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["11", 0],
+            "seed": int(seed), "steps": int(config.get("STABLE_AUDIO_STEPS", 8)), "cfg": 1.0,
+            "sampler_name": "lcm", "scheduler": "simple", "denoise": 1.0}},
+        "12": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["3", 0], "vae": ["25", 2]}},
+        "44": {"class_type": "SaveAudio", "inputs": {"audio": ["12", 0], "filename_prefix": prefix}},
+    }
+
+
+def workflow(config, caption, seconds, seed, lyrics=INSTRUMENTAL_LYRICS, prefix="recut/bgm"):
+    if engine(config) == "minimax":
+        return _minimax_workflow(config, caption, seconds, seed, lyrics, prefix)
+    return _stable_audio_workflow(config, caption, seconds, seed, prefix)
+
+
 def generate(config, caption, seconds, out_path, seed=None, lyrics=INSTRUMENTAL_LYRICS, progress=None):
     """설명·길이 → 음악 파일(out_path). (경로, 시드) 반환. ComfyUI가 꺼져 있으면 RuntimeError."""
     client = ComfyClient(config["COMFYUI_URL"], timeout_sec=int(config.get("MUSIC_TIMEOUT_SEC", 3600)))
@@ -45,7 +78,7 @@ def generate(config, caption, seconds, out_path, seed=None, lyrics=INSTRUMENTAL_
     entry = client.wait(client.submit(workflow(config, caption, seconds, seed, lyrics)), progress_cb=progress)
     files = []
     for node_out in (entry.get("outputs") or {}).values():
-        files += node_out.get("audio") or []
+        files += [f for f in node_out.get("audio") or [] if f.get("type", "output") == "output"]
     if not files:
         raise RuntimeError("ComfyUI가 음악 파일을 돌려주지 않았습니다.")
     out_path = Path(out_path)

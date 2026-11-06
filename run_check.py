@@ -275,7 +275,7 @@ def _scene_refine_checks(client, app):
     reply = {"text": answer, "source": "gemma4-26b", "reason": ""}
     seen = []
 
-    def fake_strong(system, user, config, max_tokens=1200, fallback_config=None):
+    def fake_strong(system, user, config, max_tokens=1200, fallback_config=None, in_job=False):
         seen.append(user)
         return reply["text"], reply["source"], reply["reason"]
 
@@ -369,7 +369,7 @@ def _feedback_revise_checks(app):
           video.startswith("A robotic arm lowers") and first.startswith("A red box rests")
           and loose == ("A cat runs on a beach at sunset.", "")
           and params["prompt"].startswith("A robotic arm lowers") and params["image_prompt"].startswith("A red box rests")
-          and params["image_prompt"].endswith("clean look"), (video, first, loose, params["image_prompt"]))
+          and "clean look" in params["image_prompt"], (video, first, loose, params["image_prompt"]))  # 끝에는 text_free 꼬리가 붙는다
     # 원래 묘사의 인물 생김새 지키기: 빠지면 한 번 더 묻고, 그래도 빠지면 사람 낱말 뒤에 되살린다 (옷 의견이면 안 지킴)
     orig = ("Bright lab, a young Korean woman with long black hair in a cream silk blouse stands beside a white robotic arm, "
             "eye-level medium shot")
@@ -456,6 +456,198 @@ def _logo_vector_checks(client, app, sid, base):
     check("로고 '마지막 장면에서만'도 몇 초 동안 나올지 정함 (끝에서 2초 → 8초부터, 비우면 마지막 장면 내내)",
           logo["last_sec"] == 2.0 and "gte(t,8.00)" in last2 and "gte(t,6.00)" in last_scene
           and "마지막 2초" in overlay.describe_logo(logo) and cleared["last_sec"] == 0.0, (logo, last2))
+    _end_card_logo_checks(client, app, sid, base)
+
+
+def _end_card_logo_checks(client, app, sid, base):
+    """엔딩 카드 로고 (2026-11-06 사용자: 로고를 넣으면 엔딩 카드에 맞게 들어가게).
+    상자 안에 비율을 지켜 맞추고, 흰 바탕은 가장자리와 이어진 부분만 투명하게, 카드에 넣기로 했으면 영상 위에는 겹쳐 얹지 않는다."""
+    import io
+    import tempfile as _tempfile
+
+    from PIL import Image, ImageDraw
+
+    from app.pipeline import overlay
+    from app.pipeline.video_generator.comfyui import rough_cut as rc
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        wide = Image.new("RGB", (1600, 300), "white")
+        d = ImageDraw.Draw(wide)
+        d.ellipse((40, 40, 260, 260), fill=(0, 70, 160))
+        d.ellipse((100, 100, 200, 200), fill="white")  # 로고 안쪽의 흰 부분 — 지우면 안 된다
+        d.rectangle((320, 110, 1540, 190), fill=(0, 70, 160))
+        src = f"{tmp}/wide.jpg"
+        wide.save(src, quality=95)
+        name, w, h = rc._card_logo(src, tmp, 480, 160)
+        with Image.open(f"{tmp}/{name}") as out:
+            corner, inner = out.getpixel((0, 0))[3], out.getpixel((int(out.width * 110 / 1500), out.height // 2))[3]  # 안쪽 흰 원 가운데 (여백을 잘라 낸 뒤 좌표)
+        check("엔딩 카드 로고: 가로로 긴 로고도 상자(480×160) 안에 비율대로 맞추고, 흰 바탕은 투명하게 하되 로고 안쪽 흰 부분은 남김",
+              w <= 480 and h <= 160 and (w == 480 or h == 160) and corner == 0 and inner == 255, (w, h, corner, inner))
+
+    client.post(f"{base}/decorate", data={"end_card_settings": "1", "end_card_enabled": "on", "end_card_logo": "on",
+                                          "end_card_seconds": "4", "end_card_text": "군산대학교"})
+    png = io.BytesIO()
+    Image.new("RGBA", (40, 40), (255, 200, 0, 255)).save(png, format="PNG")
+    res = client.post(f"{base}/decorate", data={"logo_settings": "1", "logo_file": (io.BytesIO(png.getvalue()), "logo.png")},
+                      content_type="multipart/form-data", follow_redirects=True)
+    with app.app_context():
+        session = db.session.get(PipelineSession, sid)
+        logo, card = overlay.load_logo(session), overlay.load_end_card(session)
+    check("엔딩 카드에 로고를 넣기로 했으면 로고를 올려도 영상 위(모서리)에는 켜지 않고 카드에만 넣음 (안내 문구)",
+          logo["file"] == "logo.png" and not logo["enabled"] and card["enabled"] and card["logo"]
+          and "엔딩 카드에 맞춰" in res.get_data(as_text=True), (logo, card))
+    client.post(f"{base}/decorate", data={"end_card_settings": "1"})  # 엔딩 카드 끄기 (뒤 검증에 영향 없게)
+
+
+def _auto_motion_checks(app):
+    """자동 움직임 경로 (2026-11-06 사용자: 프리셋 없이 장면 묘사를 보고 자동으로). 26B 비전·ComfyUI는 가짜로 바꿔 끼운다."""
+    import contextlib
+    import json as _json
+    import tempfile as _tempfile
+
+    from PIL import Image
+
+    from app.pipeline import auto_motion as am
+    from app.pipeline import llm
+    from app.pipeline import storyboard_model as sbm
+
+    print("\n── 자동 움직임 경로 (auto_motion) ──")
+    W, H = 960, 576
+    named = am.parse_plan('```json {"kind": "move", "direction": "right", "object": "orange rover", "gripper": "", '
+                          '"anchors": ["orange traffic cones", "man"]} ```')
+    broken = am.parse_plan('{"kind": "pick", "direction": "none", "object": "red cube", "gripper": "gripper", "anchors": ["monitor", "man"')
+    check("1차 답(움직임 종류·방향·이름)을 읽고, JSON이 깨져도 이름은 건지며, 이상한 답은 '경로 없음'",
+          named == {"kind": "move", "direction": "right", "object": "orange rover", "gripper": "", "anchors": ["orange traffic cones", "man"]}
+          and broken["kind"] == "pick" and broken["object"] == "red cube" and "monitor" in broken["anchors"]
+          and am.parse_plan('{"kind": "typing", "object": "x"}') == {"kind": "none"} and am.parse_plan("") is None, (named, broken))
+    targets = {"object": "orange rover", "anchor1": "orange traffic cones", "anchor2": "man"}
+    boxes = am.parse_boxes('```json {"the orange rover": {"x_min": 200, "y_min": 600, "x_max": 470, "y_max": 900}, '
+                           '"anchor1": [{"x_min": 560, "y_min": 780, "x_max": 620, "y_max": 900}, '
+                           '{"x_min": 250, "y_min": 620, "x_max": 330, "y_max": 700}], '
+                           '"anchor2": {"x_min": 500, "y_min": 50, "x_max": 700, "y_max": 300}, "junk": {"x_min": 1}', targets, W, H)
+    check("2차 답: 이름 붙은 칸(x_min…)을 픽셀로 바꾸고, 키 대신 물체 이름을 써도 맞추며, 한 키의 상자 여러 개(고깔)도 모두 읽음",
+          boxes.get("object") == [(192.0, 345.6, 451.2, 518.4)] and len(boxes.get("anchor1", [])) == 2
+          and len(boxes.get("anchor2", [])) == 1 and "junk" not in boxes, boxes)
+    plan = {"kind": "move", "direction": "right", "object": boxes["object"][0],
+            "anchors": boxes["anchor1"] + boxes["anchor2"]}
+    tracks, direction = am.build_move(plan, W, H)
+    moving = [t for t in tracks if len(t) > 1]
+    still = [t[0] for t in tracks if len(t) == 1]
+    dx = moving[0][-1][0] - moving[0][0][0]
+    check("이동: 물체 위 점들이 같은 높이로 오른쪽으로 평행 이동(위로 휘면 '떠오름'), 거리는 화면 폭 40% 이하·화면 안, "
+          "지나가는 자리의 고정점은 빼고 나머지는 고정",
+          direction == "right" and len(moving) == 9 and all(abs(p[1] - t[0][1]) < 1e-6 for t in moving for p in t)
+          and 0 < dx <= 0.4 * W and max(p[0] for t in moving for p in t) <= W * 0.96
+          and not any(abs(p[0] - 566.4) < 0.01 and abs(p[1] - 483.84) < 0.01 for p in still)  # 차가 지나가는 고깔 → 뺌
+          and any(abs(p[0] - 576.0) < 0.01 and abs(p[1] - 100.8) < 0.01 for p in still), (dx, still))  # 뒤쪽 모니터 → 고정
+    check("이동: 방향을 모르면 앞이 더 비어 있는 쪽, 움직일 공간이 없으면 경로를 만들지 않음",
+          am.build_move(dict(plan, direction="none"), W, H)[1] == "right"
+          and am.build_move(dict(plan, direction="left", object=(20.0, 300.0, 300.0, 500.0)), W, H) is None)
+    pick = {"kind": "pick", "object": (503.0, 513.0, 527.0, 537.0), "gripper": (470.0, 300.0, 540.0, 380.0), "anchors": []}
+    ptracks, _d = am.build_pick(pick, W, H)
+    tip_l, obj_c = ptracks[0], ptracks[4]
+    mid = am.POINTS // 2 - 2
+    check("집기: 손가락 끝이 내려가 물체 양옆까지 닫히고, 물체는 그때까지 가만히 있다가 함께 올라감 (팔 관절은 찍지 않음)",
+          len([t for t in ptracks if len(t) > 1]) == 7 and obj_c[mid] == obj_c[0] and obj_c[-1][1] < obj_c[0][1] - 50
+          and abs(tip_l[mid][0] - 503.0) < 2 and tip_l[mid][1] > 500, (tip_l[mid], obj_c[-1]))
+    check("집기: 집게가 물체보다 좁거나 집게를 못 찾으면 경로를 만들지 않음",
+          am.build_pick(dict(pick, gripper=(500.0, 300.0, 525.0, 380.0)), W, H) is None
+          and am.build_pick(dict(pick, gripper=None), W, H) is None)
+    fingers = am.build_pick(dict(pick, gripper=(400.0, 230.0, 560.0, 380.0), finger_r=(470.0, 330.0, 492.0, 384.0),
+                                 finger_l=(520.0, 320.0, 540.0, 376.0)), W, H)[0]
+    check("집기: 손가락을 따로 찾았으면 각 손가락 상자의 아래 가운데를 손가락 끝으로 씀 (집게 상자는 손목까지 넓게 잡혔다), 좌우가 바뀌어도 바로잡음",
+          fingers[0][0] == (481.0, 384.0) and fingers[1][0] == (530.0, 376.0), (fingers[0][0], fingers[1][0]))
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        img, img2 = f"{tmp}/v1.png", f"{tmp}/v2.png"
+        Image.new("RGB", (W, H), (40, 40, 40)).save(img)
+        Image.new("RGB", (W, H), (60, 60, 60)).save(img2)
+        board = {"style": "Cinematic", "negative": "", "defaults": {"width": W, "height": H, "fps": 24, "seed": 42},
+                 "shots": [{"id": "s01", "prompt": "An orange rover drives from left to right between cones.", "duration": 3.0},
+                           {"id": "s02", "prompt": "A student types on a keyboard.", "duration": 3.0},
+                           {"id": "s03", "prompt": "A rover drives right.", "duration": 3.0,
+                            "motion": {"width": W, "height": H, "image": img, "tracks": [[[1, 1], [5, 5]]]}}]}
+        answers = {"An orange rover": '{"kind": "move", "direction": "right", "object": "orange rover", "anchors": []}',
+                   "A student": '{"kind": "none"}'}
+        box_answer = '{"object": {"x_min": 200, "y_min": 600, "x_max": 470, "y_max": 900}}'
+
+        class _Adapter:
+            problem = ""
+
+            def motion_problem(self):
+                return self.problem
+
+        old = (am.ask, am.ask_boxes, llm.vision_ready, llm.strong_server)
+        am.ask = lambda path, desc, cfg: next((v for k, v in answers.items() if desc.startswith(k)), None)
+        am.ask_boxes = lambda path, targets, cfg: box_answer
+        llm.vision_ready = lambda cfg: True
+        llm.strong_server = lambda cfg, in_job=False: contextlib.nullcontext()
+        try:
+            notes = []
+            done = am.prepare(None, board, {"s01": img, "s02": img, "s03": img}, app.config, _Adapter(), note=notes.append)
+            s01, s02, s03 = board["shots"]
+            params = sbm.resolve_params(board, {**s01, "image": img}, app.config)
+            check("자동 진행: 차가 움직이는 장면에만 경로를 붙이고(auto 표시·컷 1개), 타이핑 장면은 그대로, 사람이 준 경로는 건드리지 않음",
+                  done == ["s01"] and s01["motion"]["auto"] == {"kind": "move", "direction": "right"}
+                  and s01["motion"]["takes"] == 1 and "motion" not in s02 and "auto" not in s03["motion"]
+                  and any("s01" in n for n in notes), (done, s02.get("motion"), notes))
+            check("자동 경로가 붙은 장면은 움직임 경로 워크플로(ltx25_motion)로 만든다",
+                  params["workflow"] == app.config.get("COMFYUI_WORKFLOW_MOTION", "ltx25_motion") and params["tracks"], params["workflow"])
+            first = _json.dumps(s01["motion"])
+            again = am.prepare(None, board, {"s01": img}, app.config, _Adapter())
+            answers["An orange rover"] = '{"kind": "none"}'
+            redrawn = am.prepare(None, board, {"s01": img2}, app.config, _Adapter())
+            check("같은 첫 프레임이면 다시 계산하지 않고, 첫 프레임이 바뀌어 경로가 필요 없어지면 예전 자동 경로를 지움",
+                  again == [] and _json.dumps(board["shots"][0].get("motion", {})) != first and redrawn == []
+                  and "motion" not in board["shots"][0], board["shots"][0].get("motion"))
+            answers["An orange rover"] = '{"kind": "move", "direction": "right", "object": "orange rover", "anchors": []}'
+            blocked = _Adapter()
+            blocked.problem = "ComfyUI-LTXVideo 노드가 없습니다"
+            llm.vision_ready = lambda cfg: False
+            no_vision = am.prepare(None, board, {"s01": img}, app.config, _Adapter())
+            llm.vision_ready = lambda cfg: True
+            check("26B 비전이나 Motion Control 노드가 없으면 경로 없이 그냥 만든다 (멈추지 않음)",
+                  no_vision == [] and am.prepare(None, board, {"s01": img}, app.config, blocked) == []
+                  and "motion" not in board["shots"][0])
+        finally:
+            am.ask, am.ask_boxes, llm.vision_ready, llm.strong_server = old
+
+    # 자동 진행: 첫 프레임 점검으로 26B를 켰을 때 자동 경로도 같이 계산 (26B를 또 켜지 않게, 2026-11-06 사용자)
+    from types import SimpleNamespace
+
+    from app.pipeline import auto_pipeline as ap
+    from app.pipeline import video_generator as vg
+
+    events = []
+
+    @contextlib.contextmanager
+    def _server(cfg, in_job=False):
+        events.append("on")
+        yield
+        events.append("off")
+
+    old2 = (llm.strong_server, llm.vision_ready, ap._review_shots, ap._renders, am.prepare, vg.resolve_local_adapter)
+    llm.strong_server, llm.vision_ready = _server, (lambda cfg: True)
+    ap._review_shots = lambda app_, r, sb, kind, failing: events.append(f"review:{kind}") or failing.append(("s02", {}))
+    ap._renders = lambda r, sid: [SimpleNamespace(selected=True, image_path=f"/img/{sid}.png")]
+    am.prepare = lambda r, sb, images, cfg, adapter, note=None: events.append(("motion", sorted(images))) or []
+    vg.resolve_local_adapter = lambda cfg: (object(), "")
+    try:
+        board = {"shots": [{"id": "s01"}, {"id": "s02"}, {"id": "s03"}]}
+        from app.pipeline import orchestrator as orch
+        old_sb = orch.ensure_storyboard
+        orch.ensure_storyboard = lambda r, cfg: board
+        try:
+            with app.app_context():
+                ap._review_pass(app, SimpleNamespace(id=0), "image")
+                events.append("|")
+                ap._review_pass(app, SimpleNamespace(id=0), "clip")
+        finally:
+            orch.ensure_storyboard = old_sb
+        check("자동 진행: 첫 프레임 점검과 같은 26B 켜기 안에서 통과한 장면(s01·s03)의 자동 경로를 계산, 컷 점검 때는 계산하지 않음",
+              events == ["on", "review:image", ("motion", ["s01", "s03"]), "off", "|", "on", "review:clip", "off"], events)
+    finally:
+        llm.strong_server, llm.vision_ready, ap._review_shots, ap._renders, am.prepare, vg.resolve_local_adapter = old2
 
 
 def _demo_replay_checks(client, app):
@@ -587,16 +779,17 @@ def main():
         "OLLAMA_MODEL": "",
         "REFINE_LLM_URL": "",  # 큰 모델(llama-server)을 켜지 않게 — 장면 다듬기 검증은 함수를 바꿔 끼운다
         "LLM_COMFY_ENABLED": False,  # 켜져 있는 ComfyUI의 Gemma를 부르지 않게 (결과가 매번 달라진다)
-        "BGM_AUTO": False,  # 배경음악 곡 생성(ComfyUI MiniMax)을 부르지 않게
+        "BGM_AUTO": False,  # 배경음악 곡 생성(ComfyUI 음악 모델)을 부르지 않게
         "DEMO_REPLAY_SEC_PER_SHOT": 0,  # 데모 재생의 '만드는 중' 표시를 기다리지 않게
+        "COMFYUI_URL": "http://127.0.0.1:9",  # 실제 ComfyUI(/interrupt·/free)에 닿지 않게 — 2026-11-06 실제 생성이 끊겼다
     })
     client = app.test_client()
 
     check("GET /", client.get("/").status_code == 200)
     check("GET create", client.get("/session/create").status_code == 200)
     home = client.get("/").get_data(as_text=True)
-    check("첫 화면: 가운데 입력창 → 세부사항 화면, 로그인 버튼 없음",
-          'id="ask-form"' in home and 'action="/session/create"' in home and 'id="google-login"' not in home
+    check("첫 화면: 가운데 입력창 → AI에게 맡기기 화면, 로그인 버튼 없음",
+          'id="ask-form"' in home and 'action="/session/new"' in home and 'id="google-login"' not in home
           and 'class="app-side"' not in home)  # 첫 화면은 입력창만 — 왼쪽 대시보드 없음
     check("GET /projects (내 프로젝트 목록)", client.get("/projects").status_code == 200)
     dash = client.get("/projects").get_data(as_text=True)
@@ -691,11 +884,21 @@ def main():
     _scene_refine_checks(client, app)
     _feedback_revise_checks(app)
     _plan_change_checks(client, app)
+    _auto_motion_checks(app)
     _demo_replay_checks(client, app)
 
     from tests import video_checks
 
     video_checks.run(check)
+
+    from tests import auto_checks  # AI 자동 진행 (질문 → 기획 → 생성·점검 → ③ 확인)
+    from app.pipeline.video_generator.comfyui import rough_cut as _rc
+
+    _ffmpeg = _rc.resolve_ffmpeg({"FFMPEG_PATH": os.getenv("FFMPEG_PATH", "")})
+    if _ffmpeg and os.path.isdir(video_checks.WORKFLOWS_DIR):
+        auto_checks.run(check, video_checks._app, _ffmpeg, video_checks.WORKFLOWS_DIR)
+    else:
+        check("AI 자동 진행 검증에 필요한 ffmpeg·워크플로", False, f"ffmpeg={_ffmpeg}")
 
     print(f"\n{'모든 검증 통과' if not _failures else f'실패 {len(_failures)}건: ' + ', '.join(_failures)}")
     return 1 if _failures else 0

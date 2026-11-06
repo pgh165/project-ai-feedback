@@ -37,11 +37,13 @@
          data-status-url="{{ url_for('session.round_status', round_id=round.id) }}"
          data-api-base="/api/rounds/{{ round.id }}" data-api-root="/api"
          data-current="{{ 1 if is_current else 0 }}" data-state="{{ round.status }}"
-         data-rough="{{ 1 if rough_running else 0 }}" data-dev="{{ 1 if dev else 0 }}">
+         data-rough="{{ 1 if rough_running else 0 }}" data-dev="{{ 1 if dev else 0 }}"
+         data-planning="{{ 1 if auto and auto.planning else 0 }}">
   <span class="round-stage">{{ round.round_number }}차 · {{ stage_names[stage] }}</span>
   {{ ui.status_chip(round.status) }}
   <span class="round-detail" id="round-detail">
     {%- if round.status == 'generating' %}{{ round.generation_detail or '만드는 중입니다' }}
+    {%- elif auto and auto.planning %}{{ auto.message or 'AI가 장면을 짜는 중이에요' }}
     {%- elif round.status == 'clustering' %}비슷한 의견을 묶는 중입니다
     {%- elif not is_current %}지난 버전입니다 — 단계 탭에서 그때 한 내용을 볼 수 있습니다
     {%- else %}{{ ui.next_hint(round.status) }}{% endif -%}
@@ -60,7 +62,10 @@
     {{ ui.tip(('처음 입력한 내용입니다.' if round.round_number == 1 else (round.round_number - 1)|string ~ '차 의견을 반영해 다듬은 기획입니다.')
               ~ ' 장면·스타일은 한국어로 보이고 영상 모델에는 영어로 들어갑니다.') }}
   </div>
-  {% if plan.editable or plan.producing %}
+  {% if plan.auto_planning %}
+  <p class="panel-empty"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+    AI가 장면을 짜는 중이에요. 끝나면 여기에 기획이 보입니다.</p>
+  {% elif plan.editable or plan.producing %}
   {# 처음 입력하던 기획 화면과 같은 입력 화면 — 제작 중이면 고친 장면만 다시 만든다 #}
   {% set pf_mode = 'producing' if plan.producing else 'edit' %}
   {% set pf_action = url_for('session.save_plan', session_id=session.id) %}
@@ -122,11 +127,31 @@
       <span class="phase-title">장면별 이미지 → 컷</span>
       {% if scene_total %}<span class="phase-count">{% if round.status == 'images_ready' %}첫 프레임 {{ images_done }}/{{ scene_total }}{% else %}컷 {{ clips_done }}/{{ scene_total }}{% endif %}</span>{% endif %}
     </div>
-    {% if round.status == 'prompt_built' %}
+    {% if auto and round.status == 'prompt_built' and auto.planning %}
+      <p class="mb-0 text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        {{ auto.message or 'AI가 장면을 짜는 중이에요' }}</p>
+      <p class="hint-inline mb-0 mt-1">기획이 끝나면 이미지 → AI 점검 → 컷 → AI 점검 → 올릴 영상까지 이어서 만들어요. 다 되면 ③ 확인에서 한 번만 봐 주세요.</p>
+    {% elif auto and round.status == 'prompt_built' and auto.phase == 'plan_failed' %}
+      <div class="alert alert-danger mb-2">{{ auto.error or 'AI가 기획하지 못했어요.' }}</div>
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <form method="post" action="{{ url_for('session.auto_replan', session_id=session.id) }}">
+          <button class="btn btn-primary">AI에게 다시 맡기기</button>
+        </form>
+        <span class="hint-inline">또는 <a href="#plan" class="side-jump" data-tab="plan">기획 탭</a>에서 직접 적은 뒤 시작하세요.</span>
+      </div>
+    {% elif round.status == 'prompt_built' %}
       <p class="mb-2">기획 탭에서 내용을 확인한 뒤 시작하세요.</p>
       <form method="post" action="{{ url_for('session.generate', session_id=session.id) }}">
         <button class="btn btn-primary">장면 만들기 시작</button>
       </form>
+    {% elif round.status == 'generating' and auto %}
+      <p class="mb-1 text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+        {{ round.generation_detail or auto.message or 'AI가 만드는 중이에요' }}</p>
+      {% if auto.log %}
+      <details class="auto-log"><summary>AI 진행 기록 {{ auto.log|length }}줄</summary>
+        <ol>{% for item in auto.log[-12:] %}<li><span class="auto-time">{{ item.at }}</span> {{ item.text }}</li>{% endfor %}</ol>
+      </details>
+      {% endif %}
     {% elif round.status == 'generating' %}
       <p class="mb-0 text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
         {{ round.generation_detail or '장면을 만드는 중입니다.' }}</p>
@@ -155,7 +180,6 @@
     {% set viewer_mode = 'images' if round.status == 'images_ready' else ('clips' if producing else 'after') %}
     {% include "session/_scene_viewer.html" %}
   {% endif %}
-  <div id="escalate-box"></div>
 </section>
 
 {# ═════════════ ③ 확인 ═════════════ #}
@@ -209,6 +233,41 @@
       </div>
     {% endif %}
   </section>
+
+  {# AI 자동 진행: 장면별 점검 결과. 끝까지 미달인 장면은 위로 올려 사람이 먼저 보게 한다 #}
+  {% if auto and auto.rows and round.status != 'generating' %}
+  <section class="stage-card auto-card" aria-labelledby="auto-title">
+    <div class="auto-head">
+      <h3 class="sub-title mb-0" id="auto-title">AI 점검 결과</h3>
+      {% if auto.flagged %}
+      <span class="tag tag-warn">확인 필요 {{ auto.flagged|length }}장면</span>
+      {% else %}
+      <span class="tag tag-good">모든 장면 통과</span>
+      {% endif %}
+      {{ ui.tip('AI가 장면마다 첫 프레임과 컷을 보고 묘사와 맞는지, 글자·깨진 형태·멈춘 화면이 없는지 점검했습니다. 기준에 못 미치면 최대 ' ~ config.get('AUTO_REVIEW_MAX_RETRIES', 2)|string ~ '번 다시 만들고 가장 나은 버전을 골랐습니다. 작은 모델이 판단해 틀릴 수 있으니 영상을 직접 보고 확인하세요.') }}
+    </div>
+    <ul class="auto-rows">
+      {% for row in auto.rows|sort(attribute='flagged', reverse=True) %}
+      <li class="{{ 'is-flagged' if row.flagged }}">
+        <strong>{{ row.id }}</strong>
+        {% if not row.checked %}<span class="tag">점검 안 함</span>
+        {% elif row.flagged %}<span class="tag tag-warn">기준 미달</span>
+        {% else %}<span class="tag tag-good">통과</span>{% endif %}
+        {% if row.image_score is not none %}<span class="hint-inline">묘사 일치 {{ '%g'|format(row.image_score) }}/10</span>{% endif %}
+        {% if row.tries > 1 %}<span class="hint-inline">{{ row.tries }}개 버전 중 고름</span>{% endif %}
+        {% if row.problems %}<span class="auto-problems">{{ row.problems|join(' · ') }}</span>{% endif %}
+        {% if row.face %}<span class="hint-inline">· {{ row.face }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if auto.assumptions %}
+    <p class="auto-assume"><strong>AI가 가정한 것</strong> — {{ auto.assumptions|join(' · ') }}</p>
+    {% endif %}
+    {% if is_current and round.status == 'video_ready' %}
+    <p class="auto-fix">마음에 안 드는 장면은 <a href="#produce" class="side-jump" data-tab="produce">② 제작</a>에서 의견을 적어 그 장면만 다시 만들 수 있어요 (직접 고치기).</p>
+    {% endif %}
+  </section>
+  {% endif %}
 
   {# 소리 확인: 장면별 내레이션 합성 결과 + 배경음악만 따로 듣기 #}
   <section class="stage-card sound-check" aria-labelledby="sound-check-title">
@@ -307,6 +366,18 @@
         <label id="logo-first-box" {{ 'hidden' if deco.logo.show != 'first' }}>처음 몇 초 <input class="form-control form-control-sm" type="number" id="logo-first" name="logo_first_sec" min="0.5" max="30" step="0.5" value="{{ deco.logo.first_sec }}"></label>
         <label id="logo-last-box" {{ 'hidden' if deco.logo.show != 'last' }}>끝에서 몇 초 <input class="form-control form-control-sm" type="number" id="logo-last" name="logo_last_sec" min="0.5" max="30" step="0.5"
                value="{{ deco.logo.last_sec if deco.logo.last_sec else '' }}" placeholder="마지막 장면 내내"></label>
+      </fieldset>
+      <fieldset>
+        <legend>엔딩 카드 <span class="text-muted">(이 프로젝트의 모든 버전에 적용)</span></legend>
+        <input type="hidden" name="end_card_settings" value="1">
+        {{ ui.tip('마지막 장면을 검게 사라지게 한 뒤, 배경색 위에 로고와 문구를 보여 주며 끝냅니다. 글자와 로고는 편집에서 넣고 AI가 그리지 않습니다.') }}
+        <label class="form-check"><input class="form-check-input" type="checkbox" name="end_card_enabled" {{ 'checked' if deco.end_card.enabled }}> 엔딩 카드 넣기</label>
+        <label>길이(초) <input class="form-control form-control-sm" type="number" name="end_card_seconds" min="2" max="12" step="0.5" value="{{ deco.end_card.seconds }}"></label>
+        <label>끝 페이드(초) <input class="form-control form-control-sm" type="number" name="end_card_fade_sec" min="0" max="3" step="0.1" value="{{ deco.end_card.fade_sec }}"></label>
+        <label>배경색 <input class="form-control form-control-sm form-control-color" type="color" name="end_card_color" value="{{ deco.end_card.color }}"></label>
+        <label class="deco-wide">문구 (줄마다 한 줄) <textarea class="form-control form-control-sm" name="end_card_text" rows="2">{{ deco.end_card.text }}</textarea></label>
+        <label class="form-check"><input class="form-check-input" type="checkbox" name="end_card_logo" {{ 'checked' if deco.end_card.logo }}> 로고도 넣기 (위에서 올린 로고)</label>
+        <label class="form-check"><input class="form-check-input" type="checkbox" name="end_card_narration" {{ 'checked' if deco.end_card.narration }}> 마지막 내레이션을 카드 위로 옮기기</label>
       </fieldset>
       <fieldset>
         <legend>자막 <span class="text-muted">(이 버전)</span></legend>
@@ -415,7 +486,7 @@
       {{ ui.tip('소리 = 장면 소리 + 내레이션(TTS) + 배경음악 한 곡. 장면은 다시 만들지 않고 소리만 새로 섞습니다.') }}
     </div>
     <p class="edit-applied mt-0"><strong>지금 설정</strong> — {{ snd.summary|join(' · ') }}</p>
-    <form class="deco-form" method="post" action="{{ url_for('session.decorate', session_id=session.id) }}">
+    <form class="deco-form" method="post" enctype="multipart/form-data" action="{{ url_for('session.decorate', session_id=session.id) }}">
       <fieldset>
         <legend>내레이션 목소리 <span class="text-muted">(이 프로젝트의 모든 버전)</span></legend>
         {% if snd.imported %}
@@ -461,8 +532,14 @@
           <textarea class="form-control form-control-sm" id="music-caption" name="music_caption" rows="2" maxlength="500"
                     placeholder="{{ deco.music_placeholder }}">{{ deco.music.caption }}</textarea></label>
         <button class="btn btn-quiet btn-sm" name="music_suggest" value="1">영상에 맞게 제안받기</button>
+        <label class="deco-wide">내 음악 파일로 넣기 <span class="text-muted">(선택)</span>
+          <input class="form-control form-control-sm" type="file" name="music_upload" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg"></label>
+        {% if deco.music.uploaded %}
+        <p class="small mb-1">지금 올린 곡을 쓰고 있어요.</p>
+        <label class="form-check"><input class="form-check-input" type="checkbox" name="music_upload_clear"> 올린 곡 빼고 AI가 만든 곡 쓰기</label>
+        {% endif %}
         <label>크기(%) <input class="form-control form-control-sm" type="number" id="music-volume" name="music_volume" min="5" max="150" step="5" value="{{ (deco.music.volume * 100)|round|int }}"></label>
-        {% if deco.music_ready %}
+        {% if deco.music_ready and not deco.music.uploaded %}
         <label class="form-check"><input class="form-check-input" type="checkbox" id="music-reroll" name="music_reroll"> 다른 곡으로 바꾸기</label>
         {% endif %}
         {{ ui.tip('곡은 처음 한 번 만들 때 몇 분 걸리고, 그 뒤에는 같은 곡을 다시 씁니다. 내레이션이 나올 때는 음악이 자동으로 작아집니다.') }}

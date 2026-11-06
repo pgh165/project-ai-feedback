@@ -2,7 +2,10 @@
 
 첫 프레임은 이미지 모델(Z-Image Turbo)이 정하고 LTX는 그걸 움직이기만 하므로, 묘사는 '사진 한 장'처럼 써야 한다.
 2026-10-23 참고 영상 비교에서 효과가 컸던 규칙: 맨 앞에 분위기·장소·시간 / 보이는 것만 (추상어 빼기) /
-막연한 물건은 생김새로 / 색감은 빛의 색으로 / 렌즈·심도 / 카메라 움직임은 끝에 짧게 / 부정문 금지(Turbo는 부정 프롬프트를 안 씀).
+막연한 물건은 생김새로 / 색감은 빛의 색으로 / 렌즈·심도 / 카메라는 고정(원래 장면이 움직임을 말할 때만 움직임, 2026-11-06 장면마다 push-in이 붙어 줌이 생겼다) / 부정문 금지(Turbo는 부정 프롬프트를 안 씀).
+실습 장비는 '이름: 보이는 부품'으로(2026-11-06 'autonomous model car'만 쓰면 장난감 차, 이름을 빼면 바퀴 없는 기판이 나왔다).
+부품 예시는 다른 장비(드론)로만 든다 — 차·로봇팔 예시를 주면 26B가 그대로 베껴 모든 영상의 장비가 같아졌다.
+로봇팔은 '한 대' — 'fingers close on either side'라고 쓰면 Z-Image가 양쪽에 팔을 하나씩, 두 대를 그렸다.
 엔진은 llm.generate_strong (큰 모델 Gemma4 26B → 못 쓰면 e2b). 줄 앞 [6초]·[6초 시드 202] 표시는 그대로 둔다.
 """
 import re
@@ -20,11 +23,15 @@ Rewrite each numbered scene as ONE English line, keeping the same number and the
 4. If a scene has two subjects, put both in ONE frame (e.g. equipment in the foreground, people in the background).
 5. Describe color as light, e.g. "cool blue window light", "warm amber desk lamp".
 6. Add framing or lens, e.g. "eye-level medium shot" or "50mm lens, shallow depth of field".
-7. End with one short camera move, e.g. "slow push-in".
+7. End with "static shot". Write a camera move (pan, push-in, tracking) only when the original scene itself asks for one.
 8. Never write negatives (no "no text", "without", "avoid").
 9. All scenes belong to ONE video: keep lighting and color consistent with the overall style unless a scene asks otherwise.
 10. When a recurring subject appears, describe it with the same English words in every scene.
-11. If something is grabbed (gripper, claw, hand), give the object a familiar small size (e.g. "a tiny dice-sized cube"), say where it rests (on the desk next to the arm base, away from people), and say the fingers close on either side of it — otherwise the video model pushes the fingers through the object.
+11. If a robot arm grabs something, write ONE robot arm and say the two-finger gripper at the end of that arm holds the object between its fingers; give the object a familiar small size (e.g. "a tiny dice-sized cube") and say where it rests (on the desk next to the arm base, away from people).
+12. Never put titles, captions, big words or logos in a scene — they are added later in editing. Screens may show small out-of-focus code and colorful data graphs; signs, posters and books stay plain, and products are plain and unbranded.
+13. If production rules are given, every scene must follow them, even when that changes a detail of the scene (for example a required nationality, color or material). Name the required look explicitly in each scene where it applies.
+14. Lab equipment (model cars, robot arms, drones, circuit boards, sensors) is a real university lab prototype, never a toy or a consumer product. Name the equipment first in plain words, then its visible parts after a colon (frame, wheels or base, boards, motors, wires, sensors, gripper — whatever that equipment really has). Format example only, for a different device: "a quadcopter drone: four propellers on black carbon arms, a small flight controller board with blinking LEDs, a battery strapped under the frame". Do not reuse these words; invent details that fit this video, and repeat them word for word in every scene where the same equipment appears.
+15. Fade-outs, darkening to black, end titles and logos are added later in editing: never describe a fade-out or the light going dark at the end of a scene.
 Output only the numbered lines, nothing else."""
 
 
@@ -64,8 +71,9 @@ def parse(text, n):
     return lines
 
 
-def refine(form, config):
-    """form: shots(필수)·synopsis·style·characters → (고친 장면 줄 목록, source, reason)."""
+def refine(form, config, in_job=False):
+    """form: shots(필수)·synopsis·style·characters → (고친 장면 줄 목록, source, reason).
+    in_job: AI 자동 기획(작업 큐 안)에서 부를 때 True."""
     from . import ko_en, llm
 
     pairs = split_lines(form.get("shots"))
@@ -77,10 +85,16 @@ def refine(form, config):
     context = [f"{label}: {form[key].strip()}" for key, label in
                (("synopsis", "Video description"), ("style", "Overall style"), ("characters", "Recurring subjects"))
                if (form.get(key) or "").strip()]
+    from . import plan_rules
+    rules = plan_rules.as_text(form.get("rules") or [], lang="en")  # 이 프로젝트의 제작 원칙 (한국어 원문)
+    if rules:
+        context.append(rules)
+    if (form.get("extra") or "").strip():  # 예: 참조 사진이 있는 물건의 영어 이름 (ref_photos.refine_note)
+        context.append(form["extra"].strip())
     user = ("\n".join(context) + "\n\nScenes:\n" if context else "Scenes:\n") + \
         "\n".join(f"{i}. {body}" for i, (_mark, body) in enumerate(pairs, 1))
     text, source, reason = llm.generate_strong(_SYSTEM, user, config, max_tokens=200 + 120 * len(pairs),
-                                               fallback_config=ko_en.engine_config(config))
+                                               fallback_config=ko_en.engine_config(config), in_job=in_job)
     if source == "template" or not text:
         raise SceneRefineError("AI를 쓸 수 없습니다. ComfyUI를 켜거나 큰 모델(REFINE_LLM_URL)을 설정하세요.")
     lines = parse(text, len(pairs))

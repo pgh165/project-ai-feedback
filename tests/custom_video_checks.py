@@ -360,7 +360,9 @@ def _cancel_checks(check, tmp, make_app):
 
     print("\n── 생성 중지 ──")
     shots = "\n".join(f"shot number {i}" for i in range(1, 5))
-    app = make_app(tmp, "cancel", JOBS_SYNC=False, MOCK_DELAY_SEC=0.6)
+    # COMFYUI_URL은 닫힌 주소로 — 중지가 ComfyUI에 /interrupt를 보내므로 .env의 실제 주소를 쓰면 진짜 생성이 끊긴다
+    # (2026-11-06: 검증을 돌리는 동안 실제 프로젝트 43의 컷 s06이 중단됐다)
+    app = make_app(tmp, "cancel", JOBS_SYNC=False, MOCK_DELAY_SEC=0.6, COMFYUI_URL="http://127.0.0.1:9")
     client = app.test_client()
     _, rid = _create(client, app, shots)
     idle = client.post(f"/api/rounds/{rid}/cancel")
@@ -393,7 +395,7 @@ def _cancel_checks(check, tmp, make_app):
           f"{st2['state']} done={done}")
 
     # 대기 중이던 작업 취소 (워커 없이 상태만 확인)
-    app2 = make_app(tmp, "cancel_q", JOBS_SYNC=False, MOCK_DELAY_SEC=0)
+    app2 = make_app(tmp, "cancel_q", JOBS_SYNC=False, MOCK_DELAY_SEC=0, COMFYUI_URL="http://127.0.0.1:9")
     c2 = app2.test_client()
     sid2, rid2 = _create(c2, app2, shots)
     with app2.app_context():

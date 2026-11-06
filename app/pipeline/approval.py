@@ -182,6 +182,8 @@ def _next_music(round_obj, change):
         settings["enabled"] = True
     elif change == "off":
         settings["enabled"] = False
+    elif change == "reroll" and settings["uploaded"]:  # 제작자가 올린 곡은 의견으로 바꾸지 않는다
+        settings["enabled"] = True
     elif change == "reroll":  # 다른 곡: 시드를 바꾸고 곡 설명은 다시 제안받는다
         settings.update(enabled=True, seed=random.randint(1, 2**31 - 1), file="", key="", seconds=0.0, caption="")
     if not (settings["enabled"] or settings["caption"] or settings["file"]):

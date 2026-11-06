@@ -20,13 +20,13 @@ from ..models import (
     ALL_STATUSES, CLIPS_READY, FAILED_STATUS, IMAGES_READY, REVIEW_STATUSES, ROUND_STATUSES,
     ClusterResult, Feedback, GenerationJob, ShotRender, VideoRound, db,
 )
-from . import approval, edit_plan, motion_tracks, narration, quality_gate, storyboard_model as sbm, youtube_client
+from . import approval, edit_plan, motion_tracks, narration, storyboard_model as sbm, youtube_client
 from .classifier import create_classifier
 from .classifier.timestamp import extract_timestamp_sec
 from .feedback_target import REGEN_TARGETS
 from .clusterer import run_clustering
 from .metrics import calculate_metrics
-from .video_generator import commercial_available, create_commercial_adapter, resolve_local_adapter
+from .video_generator import resolve_local_adapter
 from .video_generator.base import VideoGenerationResult
 from .video_generator.comfyui import rough_cut
 from .video_generator.factory import configured_name
@@ -45,7 +45,7 @@ TRANSITIONS = {
     FAILED_STATUS: {"generating", "prompt_built"},
     IMAGES_READY: {"generating", "prompt_built"},   # 이미지 다시 뽑기 / 승인 후 컷 영상 만들기
     CLIPS_READY: {"generating", "prompt_built"},    # 컷 다시 만들기 / 러프컷 만들기
-    "video_ready": {"generating", "uploaded"},   # generating: 품질 부족 장면 상용 API 재생성
+    "video_ready": {"generating", "uploaded"},   # generating: 장면 다시 만들기·올릴 영상 다시 만들기
     "uploaded": {"feedback_collected", "video_ready"},  # video_ready: 공개 취소 — 댓글을 모으기 전에만 (unpublish)
     "feedback_collected": {"feedback_collected", "feedback_classified"},
     "feedback_classified": {"feedback_classified", "clustering"},
@@ -180,6 +180,8 @@ def ensure_storyboard(round_obj, config):
     storyboard = sbm.build_storyboard(
         round_obj.prompt_text, config, aspect=session.aspect_ratio,
         shot_seconds=session.shot_seconds or None)
+    from . import photo_scenes
+    photo_scenes.attach(storyboard, photo_scenes.load(session))  # 사진으로 만든 프로젝트: 사진이 그 장면의 첫 프레임
     prev = _previous_round(round_obj)
     if prev is not None and config.get("PARTIAL_REGEN_ENABLED", True):
         _apply_feedback_to_shots(storyboard, prev, round_obj)
@@ -188,6 +190,8 @@ def ensure_storyboard(round_obj, config):
             old = sbm.get_shot(prev.storyboard_data or {"shots": []}, shot["id"])
             if old and old.get("motion") and old["prompt"].strip() == shot["prompt"].strip():
                 shot["motion"] = old["motion"]
+            if old and old.get("reference") and old["prompt"].strip() == shot["prompt"].strip():
+                shot["reference"] = old["reference"]  # 참조 영상도 같은 묘사의 장면이면 이어 간다
     # 편집 설정(이전 버전 검토에서 정한 전환·소리·자막·길이·순서)은 러프컷 합성에만 쓴다 — 장면 서명에 들어가지 않는다
     plan = edit_plan.loads(round_obj.edit_json or "", [s["id"] for s in storyboard["shots"]])
     if not edit_plan.is_default(plan):
@@ -380,6 +384,8 @@ def rebuild_rough_cut(app, round_obj, storyboard):
     from . import overlay
     logo = overlay.load_logo(round_obj.session)
     logo_file = overlay.logo_path(app.instance_path, round_obj.session_id, logo)
+    # 엔딩 카드의 로고는 '로고 넣기'를 껐어도(영상 위에는 안 얹어도) 올린 파일이 있으면 쓴다
+    card_logo = overlay.logo_path(app.instance_path, round_obj.session_id, dict(logo, enabled=True))
     music, music_note = _prepare_music(app, round_obj, storyboard, out.parent)
     # AI가 만든 컷(LTX)은 시작이 멈칫하고 끝이 느려져 이어 붙이면 어색하다 → 앞뒤를 조금 잘라 낸다.
     # 불러온 영상의 장면은 원본 그대로 이어지므로 자르지 않는다.
@@ -392,7 +398,9 @@ def rebuild_rough_cut(app, round_obj, storyboard):
                         "max_speedup": app.config["NARRATION_MAX_SPEEDUP"], "lead": app.config["NARRATION_LEAD_SEC"]},
                     report=report, edit=storyboard.get("edit"),
                     subtitles={k: v for k, v in subtitles.items() if v} or None,
-                    logo=logo, logo_file=str(logo_file) if logo_file else None, music=music, trims=trims)
+                    logo=logo, logo_file=str(logo_file) if logo_file else None, music=music, trims=trims,
+                    end_card=overlay.load_end_card(round_obj.session), end_card_logo=str(card_logo) if card_logo else None,
+                    end_card_font=app.config.get("END_CARD_FONT") or None)
     round_obj.video_path = str(out)
     notes = [report.get("edit_note", ""), music_note]
     if logo.get("enabled") and logo.get("file") and not logo_file:
@@ -424,9 +432,10 @@ def _prepare_music(app, round_obj, storyboard, work_dir):
     settings = bgm.load(round_obj, app.config)
     if not settings["enabled"]:
         return None, ""
-    if not settings["caption"]:
+    if not settings["caption"] and not settings["uploaded"]:  # 올린 곡이 있으면 만들지 않는다
         settings["caption"], _src = bgm.suggest_caption(round_obj.prompt_text, app.config, sbm.total_duration(storyboard))
-    round_obj.generation_detail = "배경음악 만드는 중 (처음 한 번은 몇 분 걸립니다)"
+    round_obj.generation_detail = ("올린 배경음악을 넣는 중" if settings["uploaded"]
+                                   else "배경음악 만드는 중 (처음 한 번은 몇 분 걸립니다)")
     db.session.commit()
     try:
         path, settings = bgm.ensure_track(app.config, settings, sbm.total_duration(storyboard), work_dir)
@@ -482,6 +491,9 @@ def _record_narration(round_obj, storyboard, clips, note, report):
 def run_generation(app, round_id, payload):
     """payload: {"shot_ids": [...]|None, "generator": "api"|None}.
     shot_ids가 없으면 이 라운드에서 아직 결과가 없는 장면을 모두 만든다 (실패 재시도 포함)."""
+    if payload.get("auto"):  # AI 자동 진행: 이미지 → AI 점검 → 컷 → AI 점검 → 러프컷 (사람은 ③에서 한 번만)
+        from . import auto_pipeline
+        return auto_pipeline.run_auto(app, round_id, payload)
     if payload.get("stage"):  # 단계별 확인 생성 (이미지 → 컷 → 러프컷)
         return run_staged(app, round_id, payload)
     if payload.get("demo_replay"):
@@ -533,17 +545,14 @@ def run_generation(app, round_id, payload):
             break
         shot = shots[shot_id]
         params = sbm.resolve_params(storyboard, shot, cfg)
-        if shot.get("generator") == "api":
-            adapter = create_commercial_adapter(cfg, http=app.config.get("_COMMERCIAL_HTTP"))
-        else:
-            if local_adapter is None:
-                local_adapter, fallback_reason = resolve_local_adapter(cfg)
-            adapter = local_adapter
+        if local_adapter is None:  # 모든 장면을 로컬에서 만든다 (상용 API는 쓰지 않음)
+            local_adapter, fallback_reason = resolve_local_adapter(cfg)
+        adapter = local_adapter
 
         version = _next_version(round_obj.id, shot_id)
         render = ShotRender(
             round_id=round_obj.id, shot_id=shot_id, version=version, status="running",
-            generator=shot.get("generator", "local"), workflow=params["workflow"],
+            generator="local", workflow=params["workflow"],
             prompt=params["prompt"], seed=params["seed"], width=params["width"],
             height=params["height"], frames=params["frames"], fps=params["fps"],
             duration=params["duration"])
@@ -551,11 +560,6 @@ def run_generation(app, round_id, payload):
         round_obj.generation_detail = f"장면 {done_before + 1}/{total} 생성 중 ({shot_id})"
         db.session.commit()
 
-        if adapter is None:
-            render.status, render.error = "failed", "상용 API를 사용할 수 없습니다 (키 없음)."
-            failures.append(shot_id)
-            db.session.commit()
-            continue
         out_path = out_dir / shot_id / f"v{version}.mp4"
         try:
             if adapter.supports_shots:
@@ -727,6 +731,53 @@ def _finish_stage(round_obj, round_id, failures, stopped, ok_state):
     db.session.commit()
 
 
+def _end_stage(round_obj, round_id, failures, stopped, ok_state, hold):
+    """hold(AI 자동 진행)면 성공했을 때 확인 대기(images_ready·clips_ready)로 넘기지 않고 generating에 둔다 —
+    다음 단계는 auto_pipeline이 이어서 한다. 실패·중지는 평소처럼 generation_failed."""
+    if hold and not failures and not stopped and round_id not in _cancel_requests:
+        db.session.commit()
+        return
+    _finish_stage(round_obj, round_id, failures, stopped, ok_state)
+
+
+def _ref_draw(adapter, round_obj, shot):
+    """이 장면 첫 프레임을 참조 사진으로 그릴지 — [{"path","label","kind"}] (얼굴: 사람 장면, 물건·장소: 묘사에 영어 이름).
+    넣을 사진이 없거나 Qwen-Image-Edit을 쓸 수 없으면 None (얼굴은 그 뒤 inswapper 합성으로)."""
+    from . import face, ref_photos
+
+    session = round_obj.session
+    prompt = shot.get("prompt_fixed") or shot["prompt"]
+    picked = ref_photos.pick(prompt, ref_photos.load(session), session.face_path or None, face.wanted(prompt),
+                             seed=f"{shot.get('id')}:{shot.get('seed')}")  # 얼굴이 여러 명이면 장면마다 무작위
+    if not picked:
+        return None
+    problem = adapter.face_problem() if hasattr(adapter, "face_problem") else "ComfyUI 아님"
+    if problem:
+        log.info("참조 사진으로 그리기를 건너뜀: %s", problem)
+        return None
+    return picked
+
+
+def _ref_note(picked):
+    names = ["얼굴 사진" if p["label"] == "person" else p["label"] for p in picked]
+    return "참조 사진으로 그렸어요: " + ", ".join(names)
+
+
+def _apply_face(config, round_obj, shot, image_path):
+    """본인 얼굴 사진이 있는 프로젝트면 사람이 나오는 장면의 첫 프레임에 얼굴을 합성한다. 화면에 남길 말(없으면 '')."""
+    from . import face
+
+    face_path = round_obj.session.face_path
+    if not face_path or not image_path or not face.wanted(shot.get("prompt_fixed") or shot["prompt"]):
+        return ""
+    try:
+        _ok, message = face.apply(config, face_path, image_path)
+    except Exception as exc:  # 합성 실패가 장면 생성을 멈추면 안 된다 — 합성 없이 이어 간다
+        log.warning("얼굴 합성 실패 (%s): %s", shot["id"], exc)
+        return f"얼굴 합성 실패: {exc}"
+    return message
+
+
 def _fail_render(render_id, exc):
     db.session.rollback()
     render = db.session.get(ShotRender, render_id)
@@ -735,10 +786,13 @@ def _fail_render(render_id, exc):
 
 
 def run_staged(app, round_id, payload):
-    """payload: {"stage": "auto"|"images"|"clips"|"rough", "shot_ids": [...], "reroll": bool}.
-    auto는 라운드의 현재 데이터를 보고 다음에 할 단계를 정한다 (재시도·처음 생성 모두 이어서 진행)."""
+    """payload: {"stage": "auto"|"images"|"clips"|"rough", "shot_ids": [...], "reroll": bool, "hold": bool}.
+    auto는 라운드의 현재 데이터를 보고 다음에 할 단계를 정한다 (재시도·처음 생성 모두 이어서 진행).
+    hold: AI 자동 진행(auto_pipeline)이 부를 때 — 단계가 끝나도 확인 대기로 넘기지 않는다."""
     cfg = app.config
-    _cancel_requests.discard(round_id)
+    hold = bool(payload.get("hold"))
+    if not hold:  # 자동 진행 중에 들어온 중지 요청은 auto_pipeline이 단계 사이에서 처리한다
+        _cancel_requests.discard(round_id)
     round_obj = db.session.get(VideoRound, round_id)
     storyboard = ensure_storyboard(round_obj, cfg)
     shots = {s["id"]: s for s in storyboard["shots"]}
@@ -783,6 +837,11 @@ def run_staged(app, round_id, payload):
     if stage == "auto":
         stage = ("images" if any(needs_image(i) for i in ids)
                  else "clips" if any(needs_clip(i) for i in ids) else "rough")
+        if stage == "rough" and any(chosen[i].status == "image_ready" for i in ids):
+            # 첫 프레임은 다 그렸지만 아직 확인 전 — 이미지 확인으로 돌아간다. 2026-11-06: 이미지 단계 직후 끊긴 작업을
+            # 재시도하자 그릴 것도 만들 컷도 없다고 보고 러프컷으로 건너뛰어 컷 없이 '영상 준비 완료'가 됐다 (프로젝트 41)
+            _end_stage(round_obj, round_id, [], False, IMAGES_READY, hold)
+            return
         if stage == "rough":
             finalize_generation(app, round_obj, storyboard)
             return
@@ -817,13 +876,16 @@ def run_staged(app, round_id, payload):
                 for other in ShotRender.query.filter_by(round_id=round_obj.id, shot_id=shot_id):
                     if other.id != render.id and other.status in ("image_ready", "image_approved"):
                         other.status = "discarded"
-                render.status, render.image_path, render.provider = "image_ready", str(kept), "previous"
+                render.status, render.image_path = "image_ready", str(kept)
+                render.provider = "photo" if shot.get("photo") else "previous"  # 올린 사진 / 이전 버전 첫 프레임
                 _select(render)
                 db.session.commit()
                 continue
+            draw_refs = _ref_draw(adapter, round_obj, shot)  # 얼굴·물건 사진을 보고 그릴지 (Qwen-Image-Edit)
             try:
                 result = adapter.generate_image(
-                    storyboard, {**shot, "image": None} if given else shot, out_dir / shot_id / f"v{version}.mp4",
+                    storyboard, {**shot, "image": None, **({"refs": draw_refs} if draw_refs else {})}
+                    if (given or draw_refs) else shot, out_dir / shot_id / f"v{version}.mp4",
                     _stage_progress(round_obj, len(targets), n, "이미지"))
             except Exception as exc:
                 log.exception("장면 %s 이미지 생성 실패", shot_id)
@@ -837,17 +899,35 @@ def run_staged(app, round_id, payload):
             render.image_path = result.image_path
             render.provider, render.elapsed_sec = result.provider, result.elapsed_sec
             render.peak_vram_mb = result.peak_vram_mb
+            face_note = (_ref_note(draw_refs) if draw_refs
+                         else _apply_face(cfg, round_obj, shot, result.image_path))  # Qwen을 못 쓰면 inswapper 합성
+            if face_note:
+                render.review_json = json.dumps({"face": face_note}, ensure_ascii=False)
             _select(render)
             db.session.commit()
         try:
             adapter.after_shot()  # 이미지 모델 내리기
         except Exception:
             log.warning("after_shot 실패", exc_info=True)
-        _finish_stage(round_obj, round_id, failures, stopped, IMAGES_READY)
+        _end_stage(round_obj, round_id, failures, stopped, IMAGES_READY, hold)
         return
 
     # stage == "clips": 승인된 이미지로 컷 영상을 만든다
     targets = requested or [i for i in ids if needs_clip(i)]
+    if not payload.get("end_frame"):  # 끝 프레임을 고정한 다시 만들기는 경로를 쓰지 않는다
+        # 자동 움직임 경로: 방향·접촉이 필요한 장면(차 이동·집어 올리기)에 26B가 첫 프레임에서 찾은 위치로 경로를 붙인다
+        from . import auto_motion
+
+        def _motion_note(text):
+            round_obj.generation_detail = text
+            db.session.commit()
+
+        images = {i: chosen[i].image_path for i in targets if chosen.get(i) and chosen[i].image_path}
+        before = sbm.dumps(storyboard)
+        auto_motion.prepare(round_obj, storyboard, images, cfg, adapter, note=_motion_note)
+        if sbm.dumps(storyboard) != before:
+            round_obj.storyboard_json = sbm.dumps(storyboard)
+            db.session.commit()
     # 여러 컷 뽑기: 경로를 저장하며 고른 컷 수(payload)나, 이미지 승인 때는 경로에 저장된 컷 수만큼 시드를 바꿔 만든다
     takes = {i: int(payload.get("takes") or 1) if requested
              else int((shots[i].get("motion") or {}).get("takes", 1)) if motion_tracks.is_active({**shots[i], "image": chosen[i].image_path if chosen.get(i) else None})
@@ -908,7 +988,7 @@ def run_staged(app, round_id, payload):
             adapter.after_shot()
         except Exception:
             log.warning("after_shot 실패", exc_info=True)
-    _finish_stage(round_obj, round_id, failures, stopped, CLIPS_READY)
+    _end_stage(round_obj, round_id, failures, stopped, CLIPS_READY, hold)
 
 
 def _require(round_obj, state, what):
@@ -1109,6 +1189,48 @@ def set_shot_motion(round_obj, shot_id, motion, config, takes=1):
     _begin_stage(round_obj, f"{shot_id} {'움직임 경로대로' if new else '움직임 경로 없이'} 컷 다시 만드는 중")
     jobs.enqueue("generate_video", round_obj.id,
                  {"stage": "clips", "shot_ids": [shot_id], "reroll": True, "takes": takes if new else 1})
+    return {"changed": True, "regenerating": True}
+
+
+def set_shot_reference(app, round_obj, shot_id, video_path, config, name="", first_frame=False):
+    """장면에 참조 영상을 붙이거나(video_path) 뗀다(None). 붙이면 그 영상의 윤곽선을 따라 컷을 만든다 (유니언 컨트롤).
+    단계 규칙은 움직임 경로와 같다: 이미지 확인이면 저장만, 컷 확인·올릴 영상 확인이면 그 장면의 컷만 새 버전으로.
+    반환: {"changed", "regenerating"}"""
+    from . import jobs, reference_video
+    from .video_generator import resolve_local_adapter
+
+    if round_obj.status not in (IMAGES_READY, CLIPS_READY, "video_ready"):
+        raise PipelineError("참조 영상은 이미지 확인·컷 확인·올릴 영상 확인 단계(공개 전)에서만 붙일 수 있습니다.")
+    busy = GenerationJob.query.filter(GenerationJob.round_id == round_obj.id,
+                                      GenerationJob.status.in_(("queued", "running"))).first()
+    if busy is not None:
+        raise PipelineError("만드는 중에는 참조 영상을 바꿀 수 없습니다. 끝나거나 중지한 뒤에 바꾸세요.")
+    storyboard = ensure_storyboard(round_obj, config)
+    shot = sbm.get_shot(storyboard, shot_id)
+    if shot is None:
+        raise PipelineError(f"장면 {shot_id}을(를) 찾을 수 없습니다.")
+    new = None
+    if video_path is not None:
+        adapter, _reason = resolve_local_adapter(config)
+        problem = (adapter.motion_problem(config.get("COMFYUI_WORKFLOW_UNION", "ltx25_union"))
+                   if hasattr(adapter, "motion_problem") else "참조 영상은 ComfyUI로만 만들 수 있습니다.")
+        if problem:
+            raise PipelineError(problem)
+        new = reference_video.store(video_path, output_dir(app, round_obj) / shot_id, name, first_frame)
+    old = shot.get("reference")
+    if (old and new and reference_video.digest(old) == reference_video.digest(new)) or (not old and not new):
+        return {"changed": False, "regenerating": False}
+    if new:
+        shot["reference"] = new
+    else:
+        shot.pop("reference", None)
+    round_obj.storyboard_json = sbm.dumps(storyboard)
+    if round_obj.status == IMAGES_READY:
+        db.session.commit()
+        return {"changed": True, "regenerating": False}
+    _reroll_shot(round_obj, shot_id, "", config)
+    _begin_stage(round_obj, f"{shot_id} {'참조 영상대로' if new else '참조 영상 없이'} 컷 다시 만드는 중")
+    jobs.enqueue("generate_video", round_obj.id, {"stage": "clips", "shot_ids": [shot_id], "reroll": True})
     return {"changed": True, "regenerating": True}
 
 
@@ -1316,30 +1438,6 @@ def rebuild_upload_video(round_obj, config):
     return jobs.enqueue("generate_video", round_obj.id, {"stage": "rough"})
 
 
-# ── 상용 API 에스컬레이션 ─────────────────────────────────────────────────
-def start_escalation(round_obj, shot_ids, flags, confirm_cost_usd, config, http=None):
-    """검증을 통과하면 선택 장면만 상용 API로 재생성하도록 큐에 넣는다. (cost, job) 반환."""
-    storyboard = ensure_storyboard(round_obj, config)
-    ready = create_commercial_adapter(config, http=http) is not None
-    cost = quality_gate.validate_escalation(
-        round_obj, storyboard, shot_ids, confirm_cost_usd, config, ready)
-
-    for shot_id in shot_ids:  # 체크 사유를 로컬 버전에 기록 (발표용 집계)
-        reasons = [r for r in (flags or {}).get(shot_id, []) if r in quality_gate.QUALITY_REASONS]
-        for r in ShotRender.query.filter_by(round_id=round_obj.id, shot_id=shot_id, selected=True):
-            r.quality_flags_json = json.dumps(reasons, ensure_ascii=False)
-    advance(round_obj, "generating", commit=False)
-    round_obj.generation_progress = 0.0
-    round_obj.generation_detail = "상용 API 재생성 대기 중"
-    round_obj.video_approved = False
-    db.session.commit()
-
-    from . import jobs
-    job = jobs.enqueue("regenerate_shots", round_obj.id,
-                       {"shot_ids": list(shot_ids), "generator": "api"})
-    return cost, job
-
-
 def retry_failed(round_obj, config=None):
     from . import jobs
 
@@ -1358,6 +1456,8 @@ def retry_failed(round_obj, config=None):
     round_obj.generation_progress = 0.0
     round_obj.generation_detail = "올릴 영상 다시 만들기 대기 중" if rough else "실패한 장면 재시도 대기 중"
     db.session.commit()
+    if round_obj.session.auto_mode and not rough:  # 된 단계는 건너뛰고 이어서 자동 진행
+        return jobs.enqueue("generate_video", round_obj.id, {"auto": True})
     staged = config is not None and staged_enabled(config)
     if not staged:
         return jobs.enqueue("generate_video", round_obj.id, {})
@@ -1409,6 +1509,8 @@ def start_generation(round_obj, config=None):
     db.session.commit()
     if source is not None:  # 데모: 만들지 않고 준비해 둔 결과를 쓴다 (진행 표시만 몇 초 보여 준다)
         return jobs.enqueue("generate_video", round_obj.id, {"demo_replay": source.id})
+    if round_obj.session.auto_mode:  # AI 자동 진행: 점검·다시 만들기까지 AI가 하고 ③ 확인에서 멈춘다
+        return jobs.enqueue("generate_video", round_obj.id, {"auto": True})
     staged = config is not None and staged_enabled(config)
     return jobs.enqueue("generate_video", round_obj.id, {"stage": "auto"} if staged else {})
 
@@ -1596,8 +1698,9 @@ def youtube_description(round_obj):
     from .youtube_upload import default_description
     text = default_description(parse_sections(round_obj.prompt_text).get("영상 설명", ""))
     music = bgm.load(round_obj)
-    if music["enabled"] and music["file"]:  # MiniMax-Music3 라이선스: 상업 이용 시 표기
-        text += f"\n{bgm.CREDIT}"
+    if bgm.is_generated(music):  # 음악 모델 라이선스 표기 (올린 곡은 표기하지 않음)
+        from flask import current_app
+        text += f"\n{bgm.credit(current_app.config)}"
     return text
 
 
@@ -1836,7 +1939,6 @@ def assign_affected_shots(round_obj, storyboard, config):
 def status_payload(app, round_obj, url_for):
     cfg = app.config
     storyboard = round_obj.storyboard_data
-    recommended = quality_gate.recommend_api_shots(round_obj)
     by_shot = {}
     for r in round_obj.shot_renders:
         by_shot.setdefault(r.shot_id, []).append(r)
@@ -1856,9 +1958,6 @@ def status_payload(app, round_obj, url_for):
             "status": chosen.status if chosen else "queued",
             "generator": chosen.generator if chosen else shot.get("generator", "local"),
             "provider": chosen.provider if chosen else "",
-            "cost_usd": round(sum(r.cost_usd for r in renders), 4),
-            "recommend_api": shot["id"] in recommended,
-            "estimate_api_cost_usd": quality_gate.estimate_cost(shot["duration"], cfg),
             "render_id": chosen.id if chosen else None,
             "image_url": (url_for("session.shot_image", render_id=chosen.id)
                           if chosen and chosen.image_path and os.path.exists(chosen.image_path) else ""),
@@ -1870,14 +1969,17 @@ def status_payload(app, round_obj, url_for):
             "motion": ({"tracks": len(shot["motion"]["tracks"]),
                         "stale": not (chosen and chosen.image_path == shot["motion"]["image"])}
                        if shot.get("motion") else None),
+            "reference": ({"name": shot["reference"].get("name", ""), "first_frame": bool(shot["reference"].get("first_frame"))}
+                          if shot.get("reference") else None),
             "reused": bool(chosen and chosen.status == "reused"),
             "enhanced_prompt": chosen.enhanced_prompt if chosen and chosen.enhanced_prompt else "",
             "narration": shot.get("narration", ""),
             "error": chosen.error if chosen and chosen.status == "failed" else "",
+            "review": chosen.review if chosen else {},  # AI 점검 결과 (auto_review)
             "versions": [{
                 "render_id": r.id, "version": r.version, "generator": r.generator,
                 "provider": r.provider, "status": r.status, "selected": r.selected,
-                "cost_usd": r.cost_usd, "flags": r.quality_flags,
+                "flags": r.quality_flags,
                 "url": url_for("session.shot_video", render_id=r.id) if r.path else "",
             } for r in renders if r.status in ("done", "reused")],
         })
@@ -1897,8 +1999,14 @@ def status_payload(app, round_obj, url_for):
     }
     configured = configured_name(cfg)
     fallback = round_obj.adapter_used == "mock" and configured not in ("mock",)
-    budget = quality_gate.budget_summary(round_obj.session_id, cfg)
+    from . import auto_pipeline
+    auto = None
+    if round_obj.session.auto_mode:
+        auto = auto_pipeline.summary(round_obj)
+        auto["planning"] = auto_pipeline.planning(round_obj)
+        auto["message"] = round_obj.video_job_message or ""
     return {
+        "auto": auto,
         "round": round_obj.round_number,
         "round_id": round_obj.id,
         "state": round_obj.status,
@@ -1921,15 +2029,6 @@ def status_payload(app, round_obj, url_for):
         "video_url": url_for("session.video", round_id=round_obj.id) if round_obj.video_path else "",
         "require_video_approval": bool(cfg.get("REQUIRE_VIDEO_APPROVAL", True)),
         "video_approved": bool(round_obj.video_approved),
-        "commercial": {
-            "available": commercial_available(cfg),
-            "adapter": cfg.get("COMMERCIAL_VIDEO_ADAPTER"),
-            "reasons": quality_gate.QUALITY_REASONS,
-        },
-        "commercial_spent_usd": budget["spent_usd"],
-        "commercial_budget_usd": budget["budget_usd"],
-        "commercial_remaining_usd": budget["remaining_usd"],
-        "cost_per_sec_usd": budget["cost_per_sec_usd"],
         "summary": summary,
         "error": round_obj.generation_error or None,
     }
