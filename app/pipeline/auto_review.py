@@ -17,15 +17,23 @@ log = logging.getLogger(__name__)
 
 _VISION_SYSTEM = (
     "You are a strict quality inspector for AI-generated video frames. "
-    "Compare the image with the scene description and answer in exactly this format:\n"
+    "Compare the image with the scene description and answer in exactly this format. "
+    "Read the image as a 3D scene: when an object near the camera overlaps a person or object further back "
+    "(for example a robot arm in front of a man's hands, or a car in front of a traffic cone), that is normal depth, "
+    "not a wrong position, not fused objects and not a malformed shape.\n"
     "SCORE: <0-10, how well the image shows the described scene>\n"
     "TEXT: <yes only if large readable words, titles, captions, logos or watermarks appear over the image or on signs "
     "and objects; small blurry code or charts on monitors do not count, else no>\n"
     "BROKEN: <yes if anything is malformed: extra or melted fingers, twisted limbs, distorted faces, "
-    "objects fused together or impossible shapes, else no>\n"
+    "objects fused together or impossible shapes; overlapping at different depths does not count, else no>\n"
     "PROBLEM: <one short sentence about the biggest problem, or none>\n"
     "FIX: <one short sentence describing how the scene should look instead, only visible things, no negatives, or none>"
 )
+# 컷 뒤쪽 프레임에 붙이는 설명 — 묘사는 동작 전체(달린다·집어 들어 올린다)라서, 끝 무렵 모습(다 달려 멈춤·들어 올린 뒤)을
+# '묘사와 다르다'고 미달시켰다 (2026-11-07 데모 컷 재점검: s01 차·s05 로봇팔 오판, 사용자가 눈으로 확인)
+_LATE_FRAME_NOTE = (" (This frame is from late in the video clip: the described action may be in progress or already "
+                    "finished, e.g. a vehicle that has driven further, an object that has been lifted. "
+                    "Judge whether it is a plausible moment of the described scene.)")
 _FIELD = re.compile(r"^\s*\**\s*(SCORE|TEXT|BROKEN|PROBLEM|FIX)\s*\**\s*[:：]\s*(.*)$", re.I | re.M)
 
 # 화면에 쓰는 문제 이름
@@ -278,7 +286,7 @@ def check_clip(clip_path, description, config):
                 frame = Path(tmp) / f"at{int(at * 100)}.png"
                 try:
                     video_import.grab_frame(ffmpeg, clip_path, duration * at, frame, width=640)
-                    answer = ask_scored(frame, description, config, min_score)
+                    answer = ask_scored(frame, description + ("" if fades else _LATE_FRAME_NOTE), config, min_score)
                 except Exception as exc:
                     log.warning("컷 프레임 점검 실패: %s", exc)
                     answer = None
