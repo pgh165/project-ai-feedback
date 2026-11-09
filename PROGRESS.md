@@ -204,6 +204,7 @@
 | 2026-11-08 | **사람의 결정은 공개·반영 두 번** (사용자: 발표 자료처럼) — 공개 뒤 ⑤ 의견 탭이 1분마다 `POST /api/rounds/<id>/auto-collect`(묶음 전 단계에서만, 실패는 다음 차례)로 댓글을 모아 분류·묶기 → 묶음이 나오면 검토 화면으로 이동. 묶음 기본값 = 반대 의견이 없으면 '반영'(AI 추천), 있으면 '결정 전'. `collect`는 새 댓글이 없으면 상태를 안 바꿈(공개 직후 '공개 취소' 유지). 버튼은 '지금 모으기'·'댓글 다시 모으기'로만 남김. run_check: 자동 수집·묶은 뒤 자동 수집 안 돔·AI 추천 기본값·결정 유지 → 모든 검증 통과. 커밋 안 함 |
 | 2026-11-09 | **inswapper 얼굴 합성 삭제** (사용자) — `face.available`·`face.apply`·`orchestrator._apply_face`·`FACESWAP_*` 설정 제거(코드는 `_archive/unused_code/face_inswapper.py`). draw 모드에서 Qwen을 못 쓰면 사진 없이 그림. 데모 질문 화면의 안 쓰던 `face_available` 제거. README·CLAUDE.md·.env 정리, 관련 검증 교체 |
 | 2026-11-09 | **시연 영상 YouTube 업로드** (사용자, 일부 공개) — 4분 시연 녹화 → https://youtu.be/6zS3-IfWk7c. 발표 자료 08 '시연 영상' 링크를 이 영상으로 바꾸고(예전: 2차 영상 jEycl9zmPIM), 발표 자료를 저장소 `docs/project_presentation.html`로 넣음(원본은 `D:\capstone\project_presentation.html`, 예전 `docs/project_intro.html`은 삭제) |
+| 2026-11-09 | 발표 자료: '2026 캡스톤 디자인' 글자 삭제, 마지막 장은 '감사합니다'만, 표지 아래에 팀 이름(Entry조)·조원 줄 추가. 안 쓰는 파일 정리 → `_archive/`(`translate_worker.py`, 워크플로 `ltx25_t2a`·원본 템플릿 3개), 빈 폴더 삭제. 모든 검증 통과 |
 
 ## 실험·결정 기록
 

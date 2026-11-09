@@ -322,7 +322,7 @@ project_ai_feedback/
 │  │  ├─ motion_tracks.py      움직임 경로: 로봇팔 프리셋 계산(순·역기구학), 저장 형식, 생성 해상도로 변환
 │  │  ├─ motion_plan.py        동작 문장 → 관절 각도 계획 (LLM, 검사 포함)
 │  │  ├─ ko_en.py draft_fill.py scene_refine.py   한국어 입력 → 영어, AI로 채우기, 장면 다듬기
-│  │  ├─ comfy_text.py translate.py translate_worker.py   Gemma 글 생성(이미지 입력), 화면용 영→한 번역 캐시
+│  │  ├─ comfy_text.py translate.py   Gemma 글 생성(이미지 입력), 화면용 영→한 번역 캐시
 │  │  ├─ storyboard_import.py video_import.py   콘티 엑셀 / 완성 영상 불러오기
 │  │  ├─ approval.py           클러스터 저장·승인 적용·롤백·재발 추적
 │  │  ├─ prompt_builder.py prompt_updater.py   프롬프트 문서 구성·파싱 / 다음 버전 프롬프트

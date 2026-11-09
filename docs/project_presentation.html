@@ -87,6 +87,15 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
 .stat .n{font:800 46px/1 var(--f);background:linear-gradient(90deg,var(--blue),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent;white-space:nowrap;}
 .stat .n.t{font-size:30px;}
 .stat .l{font:600 16px var(--f);color:var(--muted);}
+.team{grid-column:1 / -1;display:flex;align-items:center;margin-top:34px;padding-top:26px;border-top:1px solid var(--line);}
+.team .tn{font:800 34px/1.1 var(--f);letter-spacing:-0.02em;color:var(--ink);}
+.team .tn span{background:linear-gradient(90deg,var(--blue),var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent;}
+.team .ts{font:500 15px var(--f);color:var(--soft);margin-top:6px;}
+.team .mem{display:flex;flex:1;margin-left:56px;padding-left:56px;border-left:1px solid var(--line);}
+.team .m{flex:1;}
+.team .m b{display:block;font:700 28px/1.2 var(--f);color:var(--ink);}
+.team .m i{display:block;font:600 15px var(--f);font-style:normal;color:var(--soft);margin-top:6px;}
+.team .m i.lead{color:var(--blue);}
 
 /* ═══════════════════════════════════════════
    02 목적: 세 개의 트랙
@@ -271,7 +280,7 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
 <!-- ════════ 01 표지 ════════ -->
 <section class="slide" id="s-topic" data-name="주제">
   <div>
-    <p class="eyebrow" data-b="0">2026 캡스톤 디자인 · 국립군산대학교 임베디드소프트웨어학과</p>
+    <p class="eyebrow" data-b="0">국립군산대학교 임베디드소프트웨어학과</p>
     <h1 class="h1"><span data-b="0" style="--d:.1s">AI 영상 피드백</span><span class="g" data-b="0" style="--d:.25s">자동 개선 시스템</span></h1>
     <p class="sub" data-b="0" style="--d:.45s">만들고 싶은 영상을 한두 문장으로 적으면 로컬 AI가 영상을 만들고,<br>시청자 댓글을 보고 <b>스스로 더 나은 버전을 만듭니다.</b><br>작업은 AI가, 사람은 <b>두 번 결정</b>만 합니다.</p>
   </div>
@@ -300,6 +309,15 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
     <div class="stat" data-b="0" style="--d:.75s"><span class="n">6</span><span class="l">단계는 AI가 (전체 8단계)</span></div>
     <div class="stat" data-b="0" style="--d:.85s"><span class="n">0</span><span class="l">원 유료 AI API 비용</span></div>
     <div class="stat" data-b="0" style="--d:.95s"><span class="n t">장면 단위</span><span class="l">부분 재생성</span></div>
+  </div>
+  <div class="team" data-b="0" style="--d:1.05s">
+    <div><div class="tn"><span>Entry</span>조</div><div class="ts">군산대학교 임베디드소프트웨어학과</div></div>
+    <div class="mem">
+      <div class="m"><b>이성준</b><i class="lead">팀장</i></div>
+      <div class="m"><b>박기안</b><i>팀원</i></div>
+      <div class="m"><b>박지호</b><i>팀원</i></div>
+      <div class="m"><b>오현택</b><i>팀원</i></div>
+    </div>
   </div>
 </section>
 
@@ -447,7 +465,7 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
 
 <!-- ════════ 10 감사합니다 ════════ -->
 <section class="slide end" id="s-thanks" data-name="감사합니다">
-  <div><div class="thx" data-b="0">감사합니다</div><p class="who" data-b="0" style="--d:.3s">국립군산대학교 임베디드소프트웨어학과</p></div>
+  <div><div class="thx" data-b="0">감사합니다</div></div>
 </section>
 
 <div id="tl"><span id="tc"></span><div id="clips"></div><div id="pips"></div></div>
