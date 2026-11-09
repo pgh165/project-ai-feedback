@@ -23,8 +23,9 @@ def _migrate_existing_tables():
                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'))
 
 
-def create_app(config_overrides=None):
-    app = Flask(__name__, instance_relative_config=True)
+def create_app(config_overrides=None, instance_path=None):
+    """instance_path: 작업 폴더(DB·영상·토큰)를 따로 지정한다 — 시연용 데모 앱(run_demo.py)이 실제 앱과 섞이지 않게."""
+    app = Flask(__name__, instance_path=instance_path, instance_relative_config=True)
     app.config.from_object(Config)
     if config_overrides:
         app.config.update(config_overrides)
@@ -56,4 +57,8 @@ def create_app(config_overrides=None):
         from .routes.devtest import bp as devtest_bp
 
         app.register_blueprint(devtest_bp)
+    if app.config.get("DEMO_MODE"):  # 시연 촬영용 데모 앱 (run_demo.py, 따로 된 작업 폴더) — 실제 앱에는 없다
+        from .routes.demo import bp as demo_bp
+
+        app.register_blueprint(demo_bp)
     return app

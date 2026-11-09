@@ -70,6 +70,10 @@
     if (isCurrent && (data.state !== root.dataset.state ||
                       (data.rough_running ? '1' : '0') !== root.dataset.rough ||
                       (root.dataset.planning === '1' && !planning))) {  // AI 기획이 끝나거나 실패하면 새로 고침
+      // 단계가 바뀌었으면 주소의 탭 표시(#produce 등)를 지워 지금 단계 탭이 열리게 한다 — 제작이 끝나면 ③ 확인으로 (2026-11-07)
+      if (data.state !== root.dataset.state) {
+        try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+      }
       location.reload();
       return;
     }
@@ -80,4 +84,19 @@
   }
   function schedule(ms) { clearTimeout(timer); timer = setTimeout(refresh, ms); }
   refresh();
+
+  // 공개 뒤 댓글 자동 수집 — 1분마다 새 댓글을 모으고, 묶음이 나오면 반영할 묶음을 고르는 검토 화면으로 (2026-11-08)
+  const auto = document.getElementById('auto-collect');
+  if (auto && isCurrent) {
+    const tick = async () => {
+      try {
+        const res = await fetch(auto.dataset.url, {method: 'POST'});
+        const j = await res.json();
+        if (j.state === 'pending_review' && j.review_url) { location.href = j.review_url; return; }
+        if (j.state !== root.dataset.state) { location.reload(); return; }
+      } catch (e) { /* 다음 차례에 다시 */ }
+      setTimeout(tick, 60000);
+    };
+    tick();
+  }
 })();

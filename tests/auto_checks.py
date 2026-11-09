@@ -8,7 +8,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -389,15 +388,6 @@ def _unit_checks(check, ffmpeg, tmp):
         llm.generate_strong_only, auto_review.ask_vision = orig_only, orig_av
 
 
-def _fake_swap(tmp, fail=False):
-    script = Path(tmp) / ("swap_fail.py" if fail else "swap_ok.py")
-    body = ("import sys\nsys.exit('대상 이미지에서 얼굴을 찾지 못했습니다.')\n" if fail else
-            "import shutil, sys\nshutil.copyfile(sys.argv[2], sys.argv[3])\n"
-            "open(sys.argv[3] + '.from', 'w').write(sys.argv[1])\n")
-    script.write_text(body, encoding="utf-8")
-    return str(script)
-
-
 def run(check, make_app, ffmpeg, workflows):
     tmp = tempfile.mkdtemp(prefix="ai_video_auto_")
     _unit_checks(check, ffmpeg, tmp)
@@ -406,14 +396,14 @@ def run(check, make_app, ffmpeg, workflows):
     orig_strong, orig_vision = llm.generate_strong, auto_review.ask_vision
     try:
         llm.generate_strong = _fake_strong
-        swap = _fake_swap(tmp)
-        app = _app(make_app, tmp, "auto", fake, ffmpeg, workflows,
-                   FACESWAP_PYTHON=sys.executable, FACESWAP_SCRIPT=swap)
+        app = _app(make_app, tmp, "auto", fake, ffmpeg, workflows,  # 아래 얼굴 검증은 예전 방식(draw: Qwen)
+                   REF_PHOTO_MODE="draw")
         client = app.test_client()
         page = client.get("/session/new", query_string={"idea": "우리 학과 홍보 영상", "aspect": "16:9"})
         html = page.get_data(as_text=True)
-        check("첫 화면 → 'AI에게 맡기기' 화면 (질문·가정·얼굴 사진·직접 기획하기)",
-              page.status_code == 200 and 'id="intake-form"' in html and 'name="face"' in html and "직접 기획하기" in html)
+        check("첫 화면 → 'AI에게 맡기기' 화면 (질문·가정·참고 사진(인물·물건·장소 한 칸)·직접 기획하기)",
+              page.status_code == 200 and 'id="intake-form"' in html and 'id="ref-rows"' in html
+              and "value: 'person'" in html and "직접 기획하기" in html)
         check("첫 화면 입력창은 AI에게 맡기기로 간다", 'action="/session/new"' in client.get("/").get_data(as_text=True))
         res = client.post("/session/new/analyze", json={"idea": "고양이 브이로그 30초", "ask_llm": False})
         check("분석 API: 질문·가정 JSON", res.status_code == 200 and "assumptions" in res.get_json())
@@ -490,6 +480,21 @@ def run(check, make_app, ffmpeg, workflows):
               len(s03) == 3 and flagged == ["s03"] and status2 == "video_ready", (len(s03), flagged, status2))
         html = client.get(f"/session/{sid2}").get_data(as_text=True)
         check("확인 화면에 미달 장면 표시", "확인 필요 1장면" in html and "기준 미달" in html)
+        # 사람이 영상을 보고 '문제없음으로 확인' (2026-11-07: 앞뒤 겹침 오판) → 확인 필요에서 빠지고 AI 의견은 남음, 취소도 됨
+        with app.app_context():
+            s03_sel = next(r.id for r in ShotRender.query.filter_by(round_id=rnd.id, shot_id="s03") if r.selected)
+        has_button = "문제없음으로 확인" in html
+        client.post(f"/api/shots/{s03_sel}/confirm", data={"ok": "1"})
+        html_ok = client.get(f"/session/{sid2}").get_data(as_text=True)
+        with app.app_context():
+            human = db.session.get(ShotRender, s03_sel).review.get("human", {})
+            img_kept = "image" in db.session.get(ShotRender, s03_sel).review
+        client.post(f"/api/shots/{s03_sel}/confirm", data={"ok": "0"})
+        html_undo = client.get(f"/session/{sid2}").get_data(as_text=True)
+        check("미달 장면 '문제없음으로 확인' → 확인 필요에서 빠지고 '사람이 확인 · 문제없음' + AI 의견은 그대로, 확인 취소 가능",
+              has_button and human.get("ok") and img_kept and "확인 필요" not in html_ok.split('id="auto-title"')[1][:400]
+              and "모든 장면 확인 완료" in html_ok and "사람이 확인 · 문제없음" in html_ok and "AI 의견:" in html_ok
+              and "확인 필요 1장면" in html_undo, human)
 
         # 컷이 내용 문제(묘사와 다름)로 한 번 미달 → 첫 프레임부터 다시 그리고 그 첫 프레임으로 컷 (2026-11-06)
         clip_calls = []
@@ -679,7 +684,7 @@ def run(check, make_app, ffmpeg, workflows):
               and "The first person is the person from image 1" in ref_photos.instruction(two)
               and "The second person is the person from image 2" in ref_photos.instruction(two)
               and ref_photos.pick("one robot arm picks a cube", people, None, False, seed="x") == []
-              and "얼굴 사진 3명" in ref_photos.planning_note(people) and ref_photos.refine_note(people) == "",
+              and "인물 사진 3명" in ref_photos.planning_note(people) and ref_photos.refine_note(people) == "",
               ([p[0]["path"][-6:] for p in one], [p["path"][-6:] for p in two]))
 
         # 사진으로 영상 만들기: 사진 하나 = 장면 하나, 사진이 첫 프레임 (새로 그리지 않음)
@@ -724,21 +729,71 @@ def run(check, make_app, ffmpeg, workflows):
         html = client.get("/session/new", query_string={"idea": "학과 홍보"}).get_data(as_text=True)
         check("맡기기 화면에 '장면 사진으로 만들기' 칸", "장면 사진으로 만들기" in html and "photo_file" in html)
 
-        # Qwen을 쓸 수 없으면(워크플로·모델 없음) 예전처럼 inswapper로 합성
-        app2 = _app(make_app, tmp, "auto_noqwen", fake, ffmpeg, workflows, FACESWAP_PYTHON=sys.executable,
-                    FACESWAP_SCRIPT=swap, COMFYUI_WORKFLOW_FACE="no_such_workflow")
+        # Qwen을 쓸 수 없으면(워크플로·모델 없음) 사진 없이 그린다 (inswapper 합성은 2026-11-09에 뺐다)
+        app2 = _app(make_app, tmp, "auto_noqwen", fake, ffmpeg, workflows,
+                    COMFYUI_WORKFLOW_FACE="no_such_workflow", REF_PHOTO_MODE="draw")
         llm.generate_strong = _fake_strong
         auto_review.ask_vision = _vision(None, 0, [])
         _start(app2.test_client(), face=(io.BytesIO(_PNG_1X1), "me.png"))
         with app2.app_context():
             rnd = PipelineSession.query.order_by(PipelineSession.id.desc()).first().current_round
-            note1 = next(r for r in ShotRender.query.filter_by(round_id=rnd.id, shot_id="s01") if r.selected).review.get("face", "")
-        check("Qwen을 쓸 수 없으면 inswapper 합성으로 대신함", "합성" in note1, note1)
+            sel1 = next(r for r in ShotRender.query.filter_by(round_id=rnd.id, shot_id="s01") if r.selected)
+            note1, img1, status2 = sel1.review.get("face", ""), sel1.image_path, rnd.status
+        check("Qwen을 쓸 수 없으면 사진 없이 그리고 얼굴을 합성하지 않음 (③ 확인까지)",
+              status2 == "video_ready" and not note1 and img1
+              and not Path(img1).with_name(Path(img1).stem + "_orig.png").exists(), (status2, note1))
 
-        ok, msg = face.apply(dict(app.config, FACESWAP_SCRIPT=_fake_swap(tmp, fail=True)), face_file,
-                             str(Path(tmp) / "one.png"))
-        check("얼굴을 못 찾으면 합성하지 않고 이유만 남김 (장면은 그대로 진행)", not ok and "얼굴" in msg, msg)
-        check("사람 장면만 합성 대상", face.wanted("a young Korean student smiles") and not face.wanted("a robot arm"))
+        # 참고 사진(기본, 2026-11-07 사용자: 원본도 Qwen 안 씀): 인물·물건 사진을 한 칸에서 받아, 그리기·합성에 쓰지 않고
+        # 읽은 생김새를 장면 줄에 넣는다 — 인물은 사람 장면, 물건은 그 영어 이름이 나오는 장면
+        who = "a young Korean man with straight black bowl-cut bangs and thick black rectangular-frame glasses"
+        board_look = "a small green circuit board with a black processor and gold pin headers"
+        orig_describe = ref_photos.describe
+        ref_photos.describe = lambda path, kind, cfg: who if kind == "person" else board_look
+        try:
+            app3 = _app(make_app, tmp, "auto_ref", fake, ffmpeg, workflows)
+            llm.generate_strong = strong_rpi
+            auto_review.ask_vision = _vision(None, 0, [])
+            sub0 = len(fake.submitted)
+            page3 = app3.test_client().get("/session/new", query_string={"idea": "학과 홍보", "aspect": "16:9"})
+            _start(app3.test_client(), ref_file=[(io.BytesIO(_PNG_1X1), "me.png"), (io.BytesIO(_PNG_1X1), "rpi.png")],
+                   ref_name=["팀원 1", "Raspberry Pi 5"], ref_kind=["person", "object"])
+            with app3.app_context():
+                sess3 = PipelineSession.query.order_by(PipelineSession.id.desc()).first()
+                rnd = sess3.current_round
+                board3 = rnd.storyboard_data
+                refs3_saved = json.loads(sess3.refs_json)
+                notes3 = [r.review.get("face", "") for r in ShotRender.query.filter_by(round_id=rnd.id) if r.selected]
+                status3 = rnd.status
+        finally:
+            ref_photos.describe = orig_describe
+            llm.generate_strong = _fake_strong
+        qwen3 = [wf for wf in fake.submitted[sub0:]
+                 if any(n.get("class_type") == "TextEncodeQwenImageEditPlus" for n in wf.values())]
+        lines3 = [s["prompt"] for s in board3["shots"]]
+        person3 = [l for l in lines3 if face.wanted(l.split(";")[0])]
+        rpi3 = [l for l in lines3 if "Raspberry Pi 5" in l.split(";")[0]]
+        check("참고 사진(기본): 인물·물건을 한 칸에서 받아 사진마다 생김새를 읽고(desc 저장), 사람 장면엔 인물 생김새·"
+              "'Raspberry Pi 5' 장면엔 보드 생김새를 글로 넣음. Qwen으로 그리거나 얼굴을 합성하지 않음, ③ 확인까지",
+              status3 == "video_ready" and not qwen3 and not any(notes3)
+              and [r.get("desc") for r in refs3_saved] == [who, board_look]
+              and person3 and all(f"the main person is {who}" in l for l in person3)
+              and rpi3 and all(f"the Raspberry Pi 5 is {board_look}" in l for l in rpi3)
+              and all(who not in l for l in lines3 if l not in person3)
+              and "참고 사진" in page3.get_data(as_text=True), (status3, len(qwen3), notes3, lines3[:2]))
+        pk = [{"path": "a", "label": "person", "n": 1, "of": 1}, {"path": "b", "label": "Robot Arm", "kind": "object"}]
+        two = [{"path": "a", "label": "person", "n": 1, "of": 2}, {"path": "c", "label": "person", "n": 2, "of": 2}]
+        dsc = {"a": "a man in a black hoodie", "b": "a silver arm with a two-finger gripper", "c": "a man in a grey shirt"}
+        check("생김새 넣기: 고른 사진만·이미 적힌 건 다시 안 붙임·두 사람은 첫째·둘째, 생김새를 못 읽은 사진은 건너뜀",
+              ref_photos.describe_line("a student and a Robot Arm", pk, dsc)
+              == "a student and a Robot Arm; the main person is a man in a black hoodie; "
+                 "the Robot Arm is a silver arm with a two-finger gripper"
+              and ref_photos.describe_line("a man in a black hoodie types", pk[:1], dsc) == "a man in a black hoodie types"
+              and "the first person is a man in a black hoodie; the second person is a man in a grey shirt"
+              in ref_photos.describe_line("two students talk", two, dsc)
+              and ref_photos.describe_line("a robot arm", pk[1:], {}) == "a robot arm"
+              and ref_photos.reference_mode({}) and not ref_photos.reference_mode({"REF_PHOTO_MODE": "draw"}))
+
+        check("사람이 나오는 장면 판단 (인물 사진을 고를 장면)",face.wanted("a young Korean student smiles") and not face.wanted("a robot arm"))
     finally:
         llm.generate_strong, auto_review.ask_vision = orig_strong, orig_vision
         fake.stop()

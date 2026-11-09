@@ -93,10 +93,13 @@ def _plan(app, round_obj):
     from . import plan_rules
     rules = plan_rules.for_session(session)  # 맡기기 화면에서 사용자가 답한 제작 원칙
 
-    from . import ref_photos
+    from contextlib import nullcontext
+
+    from . import llm, ref_photos
     refs = ref_photos.load(session)
-    if refs:  # 물건·장소 사진: 영어 이름을 정해 장면 묘사와 맞춘다 (그 이름이 나오는 장면에 사진을 함께 넣는다)
-        note(round_obj, "참조 사진 이름을 정리하는 중이에요")
+    reference = ref_photos.reference_mode(cfg)  # 참고 사진(기본): 사진마다 생김새를 글로 읽어 장면 줄에 넣는다 (Qwen 안 씀)
+    if refs:  # 물건·장소 사진: 영어 이름을 정해 장면 묘사와 맞춘다 (그 이름이 나오는 장면에 그 사진의 생김새를 넣는다)
+        note(round_obj, "참고 사진 이름을 정리하는 중이에요")
         for ref in refs:
             if not ref.get("en"):
                 ref["en"] = ref_photos.english_name(ref["name"], cfg)
@@ -104,9 +107,20 @@ def _plan(app, round_obj):
         synopsis = synopsis + "\n" + ref_photos.planning_note(refs)
 
     face_desc = ""
+    if session.face_path or (reference and refs):
+        # 26B 비전은 한 번만 켜서 사진을 모두 읽는다 (켜는 데 약 14초, 이후 장당 1~3초)
+        with llm.strong_server(cfg, in_job=True) if llm.vision_ready(cfg) else nullcontext():
+            if session.face_path:
+                note(round_obj, "인물 사진을 보고 생김새를 적는 중이에요")
+                face_desc = face.describe(cfg, session.face_path)
+            if reference:
+                for i, ref in enumerate(refs, start=1):
+                    if not ref.get("desc"):
+                        note(round_obj, f"참고 사진 {i}/{len(refs)}({ref['name']})을 보고 생김새를 적는 중이에요")
+                        ref["desc"] = ref_photos.describe(ref["path"], ref.get("kind", "object"), cfg)
+        if reference and refs:
+            ref_photos.save(session, refs)
     if session.face_path:
-        note(round_obj, "얼굴 사진을 보고 생김새를 적는 중이에요")
-        face_desc = face.describe(cfg, session.face_path)
         # 얼굴 사진을 올렸으면 그 사람이 나오는 장면이 있어야 한다 — 2026-11-04: '내가 실습하는 영상'인데 세 장면 모두 보드만 나왔다
         synopsis += "\n- 얼굴 사진 속 주인공이 직접 등장해 무언가를 하는 장면을 반드시 1개 이상 넣는다"
 
@@ -160,7 +174,14 @@ def _plan(app, round_obj):
         prompt_text, _tr, originals = ko_en.translate_prompt_doc(prompt_text, cfg)
     except ko_en.KoEnError as exc:
         return _plan_failed(round_obj, f"장면을 영어로 옮기지 못했어요: {exc}")
-    ko_en.remember_originals(pairs + list(originals))  # 화면에는 AI가 쓴 한국어 장면이 보이게
+    shown_pairs = pairs + list(originals)
+    desc_of = {r["path"]: r.get("desc", "") for r in refs}
+    if session.face_path:
+        desc_of[session.face_path] = face_desc
+    if reference and any(desc_of.values()):  # 참고 사진: 장면 줄마다 해당 사진의 생김새를 글로 넣는다 (사진으로 그리지 않음)
+        prompt_text, extra = _refs_into_shots(prompt_text, refs, session.face_path, desc_of, dict(shown_pairs))
+        shown_pairs += extra
+    ko_en.remember_originals(shown_pairs)  # 화면에는 AI가 쓴 한국어 장면이 보이게
 
     session.title = (filled.get("title") or session.title)[:200]
     session.genre = filled.get("genre") or choice.get("genre", "") or session.genre
@@ -177,6 +198,32 @@ def _plan(app, round_obj):
     note(round_obj, f"기획 완료 — 장면 {len(shots_ko)}개. 이제 장면을 만들어요", commit=False)
     db.session.commit()
     orchestrator.start_generation(round_obj, cfg)
+
+
+def _refs_into_shots(prompt_text, refs, face_path, desc_of, ko_of):
+    """[샷 목록]의 장면 줄마다 넣을 참고 사진을 고르고(ref_photos.pick — draw 모드와 같은 규칙) 그 생김새를 글로 붙인다
+    ('1. [5초] ' 같은 앞 표시는 그대로). 51번처럼 장면 줄마다 생김새를 적어야 장면이 바뀌어도 같은 사람·물건으로 그려진다.
+    반환: (새 문서, [(새 영어 줄, 원래 한국어 줄)]) — 화면에는 계속 AI가 쓴 한국어 장면이 보이게."""
+    import re
+
+    from . import face, ref_photos
+    from .prompt_builder import parse_sections, render_sections
+
+    sections = parse_sections(prompt_text)
+    lines, extra = [], []
+    for n, line in enumerate((sections.get("샷 목록") or "").splitlines(), start=1):
+        m = re.match(r"^(\s*\d+\s*[.)]\s*(?:\[[^\]]*\]\s*)?)(.*)$", line)
+        if not m:
+            lines.append(line)
+            continue
+        head, body = m.groups()
+        picked = ref_photos.pick(body, refs, face_path, face.wanted(body), seed=f"s{n:02d}")  # 인물 여러 명이면 장면마다 무작위
+        new = ref_photos.describe_line(body, picked, desc_of)
+        if new != body and body in ko_of:
+            extra.append((new, ko_of[body]))
+        lines.append(head + new)
+    sections["샷 목록"] = "\n".join(lines)
+    return render_sections(sections), extra
 
 
 def _plan_failed(round_obj, message):
@@ -416,10 +463,16 @@ def summary(round_obj):
         review = chosen.review if chosen else {}
         tried = len([r for r in renders if r.review])
         problems = [p for k in ("image", "clip") for p in (review.get(k) or {}).get("problems", [])]
-        rows.append({"id": shot["id"], "flagged": shot["id"] in (data.get("flagged") or []),
-                     "checked": bool(review), "problems": list(dict.fromkeys(problems)),
+        ai_flagged = shot["id"] in (data.get("flagged") or [])
+        human = review.get("human") or {}
+        rows.append({"id": shot["id"], "ai_flagged": ai_flagged,
+                     # 사람이 '문제없음'으로 확인한 장면은 확인 필요에서 뺀다 (AI 점검 결과는 그대로 보인다)
+                     "flagged": ai_flagged and not human.get("ok"), "confirmed": bool(human.get("ok")),
+                     "render_id": chosen.id if chosen else None,
+                     "checked": bool(review.get("image") or review.get("clip")), "problems": list(dict.fromkeys(problems)),
                      "image_score": (review.get("image") or {}).get("score"),
                      "tries": tried, "face": review.get("face", "")})
-    return {"phase": data.get("phase", ""), "flagged": data.get("flagged") or [], "rows": rows,
+    return {"phase": data.get("phase", ""), "flagged": [r["id"] for r in rows if r["flagged"]],
+            "confirmed": [r["id"] for r in rows if r["confirmed"] and r["ai_flagged"]], "rows": rows,
             "log": data.get("log") or [], "assumptions": data.get("assumptions") or [],
             "error": data.get("error", "")}

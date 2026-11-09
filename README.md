@@ -4,7 +4,7 @@
 
 제품 소개·홍보·뮤직비디오·단편 등 **만들고 싶은 영상을 한두 문장으로** 적으면, AI가 부족한 것만 되묻고
 장면을 짠 뒤 로컬 영상 생성 AI(ComfyUI + LTX-2.5)로 장면 단위 영상을 만듭니다. **AI가 결과를 점검해 기준에 못 미치는 장면은
-스스로 다시 만들고**, 사람은 완성된 영상을 마지막에 한 번만 확인합니다. 내레이션(TTS)·배경음악·로고를 얹어 YouTube에 올린 뒤, 시청자 댓글에서
+스스로 다시 만들고**, 사람은 완성된 영상 확인·공개와 반영할 의견 고르기만 합니다. 내레이션(TTS)·배경음악·로고를 얹어 YouTube에 올린 뒤, 시청자 댓글에서
 **건설적인 피드백만 자동으로 골라 묶고**, 제작자가 승인한 의견을 다음 버전에 반영합니다.
 지적받은 장면만 다시 만들고, 소리·편집 의견은 장면을 다시 만들지 않고 올릴 영상 합성에만 반영합니다.
 
@@ -53,14 +53,14 @@ Claude API와 YouTube 연동은 키·계정이 있을 때만 선택적으로 사
 
 ## 1. 전체 흐름
 
-### 사람이 하는 일은 두 번 — 처음 설명, 마지막 확인
+### 사람이 하는 일 — 처음 설명, 영상 확인·공개, 의견 고르기
 
-1. 원하는 영상을 한두 문장으로 입력한다 (선택: 본인 얼굴 사진)
+1. 원하는 영상을 한두 문장으로 입력한다 (선택: 인물·물건·장소 참고 사진)
 2. AI가 **부족한 정보만** 되묻는다. 나머지(길이·비율·내레이션·배경음악)는 기본값으로 채우고 "이렇게 가정했어요"로 보여 준다
 3. AI가 프롬프트(스토리보드)를 만들고 장면별로 첫 프레임 이미지 → 컷 영상을 생성한다
 4. AI가 결과를 점검하고 기준 미달 장면은 다시 만든다 (장면당 최대 2번, 그래도 미달이면 가장 나은 버전 + "확인 필요" 표시)
 5. 완성된 영상을 사용자가 **한 번만** 확인한다 — 아쉬운 장면은 '직접 고치기' 도구로 그 장면만 다시
-6. YouTube에 올리고 댓글을 모아 피드백을 반영한다 (의견 승인은 사람)
+6. YouTube에 올리면 댓글을 1분마다 자동으로 모아 분류·묶기까지 하고, 제작자가 반영할 묶음을 정한다
 
 단계마다 직접 확인하며 만들고 싶으면 첫 화면 메뉴의 **직접 기획하기**로 예전 흐름(기획 폼 → 이미지 확인 → 컷 확인 → 러프컷)을 쓸 수 있습니다.
 
@@ -109,7 +109,7 @@ flowchart TB
 
     subgraph s3["③ 확인"]
         direction LR
-        rc["rough_cut (ffmpeg)<br/>컷 잇기 · 디졸브"] --> mix["내레이션 (edge-tts)<br/>배경음악 (MiniMax Music)<br/>로고 · 타임라인"] --> out["올릴 영상 .mp4<br/>+ 자막 .srt"]
+        rc["rough_cut (ffmpeg)<br/>컷 잇기 · 디졸브"] --> mix["내레이션 (edge-tts)<br/>배경음악 (Stable Audio 3)<br/>로고 · 엔딩 카드 · 타임라인"] --> out["올릴 영상 .mp4<br/>+ 자막 .srt"]
     end
 
     subgraph s4["④ 공개"]
@@ -143,7 +143,7 @@ flowchart TB
 | 화면 | 주소 | 내용 |
 |------|------|------|
 | 첫 화면 | `/` | 가운데 입력창에 만들고 싶은 영상을 적고 화면 비율·첨부(콘티 엑셀/완성 영상)를 고름 |
-| AI에게 맡기기 | `/session/new` | AI의 질문(부족한 것만)·"이렇게 가정했어요"(눌러서 바꿈)·얼굴 사진 → 끝까지 자동 |
+| AI에게 맡기기 | `/session/new` | AI의 질문(부족한 것만)·"이렇게 가정했어요"(눌러서 바꿈)·참고 사진 → 끝까지 자동 |
 | 직접 기획하기 (① 기획) | `/session/create` | 제목·종류 추천, 장면 구성·내레이션·스타일 입력, **AI로 채우기**, 콘티 엑셀 불러오기 |
 | 내 프로젝트 | `/projects` | 프로젝트 목록, `?view=todo` = 할 일(사람 확인이 필요한 단계) |
 | 프로젝트 상세 | `/session/<id>` | 왼쪽 **단계 탭** ① 기획 ② 제작 ③ 확인 ④ 공개 ⑤ 의견 + 위쪽 상태 줄(진행률·생성 중지) |
@@ -151,6 +151,7 @@ flowchart TB
 | 버전 기록·리포트 | `/session/<id>/versions`, `/report` | 프롬프트 diff·롤백, 반영률·절약 시간·재사용 장면 |
 | 완성 영상 불러오기 | `/session/import` | 컷 경계 자동 감지 → 합치기/나누기 → 1차 버전으로 등록 |
 | 점검 페이지 (개발용) | `/dev/pipeline-test` | 영상 생성~2차 부분 재생성까지 단계별 실행·자동 판정 |
+| 대화형 시작 (데모 앱만) | `/demo` | 시연 촬영용: 설명·질문에 답하면 준비된 결과로 이어짐 ([15절](#15-시연용-데모-재생)) |
 
 모든 버전이 같은 단계 탭을 쓰고, 지난 버전은 읽기 전용입니다. 진행 중에는 상태 줄이 2초마다 갱신됩니다.
 
@@ -160,16 +161,22 @@ flowchart TB
 - **부족한 것만 묻기** (`intake.py`) — 영상 종류·길이·화면 비율·내레이션·배경음악은 설명에서 읽고, 못 읽으면 기본값으로 가정해 보여 줌.
   종류를 알 수 없을 때만 그것을 묻고, 내용 질문은 Gemma가 꼭 필요한 것만 최대 2개 (보기 + 직접 쓰기)
 - **AI 기획** — 'AI로 채우기'와 '장면 다듬기'를 이어서 써 장면·내레이션·스타일을 만들고 영상 모델용 영어로 다듬음
-- **AI 점검** (`auto_review.py`) — 첫 프레임은 Gemma 비전으로 묘사 일치 점수·글자·형태 깨짐을, 컷은 프레임 차이로 멈춘 화면·어두운 화면과
-  뒤쪽 프레임의 깨짐을 봄. 미달이면 점검 결과의 고쳐 쓰기 문장을 장면 의견으로 넣어 그 장면만 다시 만들고, 장면마다 가장 나은 버전을 고름
+- **AI 점검** (`auto_review.py`) — 첫 프레임은 Gemma4 26B 비전(못 쓰면 e2b)으로 묘사 일치 점수·글자·형태 깨짐을, 컷은 프레임 차이로
+  멈춘 화면·어두운 화면·의도하지 않은 줌을 보고 뒤쪽 75%·끝 95% 프레임도 묘사 일치 점수로 봄. 미달이면 고쳐 쓰기 문장을 장면 의견으로 넣어
+  그 장면만 다시 만들고(묘사와 다르면 첫 프레임부터), 장면마다 가장 나은 버전을 고름. AI가 답하지 못하면 통과로 두고 멈추지 않음
+- **자동 움직임 경로** (`auto_motion.py`, `AUTO_MOTION`) — 컷을 만들기 전에 26B 비전이 첫 프레임에서 물체·집게 위치를 찾아
+  옮기기·집어 올리기 경로를 자동으로 만들어 줌. 못 찾으면 경로 없이 진행
 - **사진으로 영상 만들기** (`photo_scenes.py`) — 사진을 올리면 사진 하나가 장면 하나가 되고 그 사진을 그대로 움직인다(LTX I2V). 장면마다 일어날 일을 적거나 AI에게 맡김
-- **본인 얼굴 사진** — 사람이 나오는 장면의 첫 프레임을 사진 속 사람으로 그린다 (Qwen-Image-Edit-2511, Apache 2.0). 못 쓰면 inswapper 합성
-- **물건·장소 참조 사진** (`ref_photos.py`) — 장면에 그 물건이 나오면 사진대로 그린다 (장면당 물건 1장 + 얼굴 + 장소)
+- **참고 사진** (`ref_photos.py`·`face.py`) — 인물·물건·장소 사진을 한 칸에서 받는다(이름·종류, 최대 6장). Gemma4 26B 비전이 사진마다
+  생김새(머리 모양·안경·옷 / 모양·색·부품 / 방 분위기)를 영어로 읽어, 사람이 나오는 장면엔 인물 생김새를, 그 이름이 나오는 장면엔 물건·장소
+  생김새를 장면 묘사에 글로 넣고 Z-Image로 그린다 — 사진을 그림에 넣거나 얼굴을 합성하지 않아 AI 느낌이 덜하다(2026-11-07~, `REF_PHOTO_MODE=reference`).
+  예전 방식(Qwen-Image-Edit-2511로 사진대로 그리기)은 `REF_PHOTO_MODE=draw`
 - **참조 영상으로 움직임 따라 하기** (`reference_video.py`) — 영상의 윤곽선을 따라 동작·구도는 그대로, 겉모습만 장면 묘사대로 (LTX Union Control IC-LoRA)
 - **제작 원칙 질문** (`intake.rule_questions`, `plan_rules.py`) — 정해 둔 규칙 대신 AI가 설명을 보고 '꼭 지킬 조건' 질문을 만들고, 답한 것만 그 프로젝트의 원칙으로 AI 기획이 따름. 화면 글자 금지는 항상 적용
-- **배경음악 파일 올리기** — 맡기기 화면이나 ③ 꾸미기에서 곡을 올리면 그 곡을 쓰고, 없을 때만 AI(MiniMax)가 만듦
+- **배경음악 파일 올리기** — 맡기기 화면이나 ③ 꾸미기에서 곡을 올리면 그 곡을 쓰고, 없을 때만 AI(Stable Audio 3 Medium)가 만듦
 - **글자 없는 화면** (`text_free.py`) — 글자·로고는 편집에서 넣고, 모델에는 모니터·간판을 글자 없는 모습으로 묘사
-- **한 번 확인** — ③ 확인 화면에 장면별 점검 결과, 끝까지 미달인 장면, AI가 가정한 것을 보여 줌
+- **한 번 확인** — ③ 확인 화면에 장면별 점검 결과, 끝까지 미달인 장면, AI가 가정한 것을 보여 줌.
+  미달 장면을 눈으로 보고 괜찮으면 **'문제없음으로 확인'**(`/api/shots/<id>/confirm`) → '사람이 확인 · 문제없음'으로 표시, 취소 가능
 
 ### 기획 (직접 기획하기)
 - **텍스트로 새 영상 만들기** — 영상 설명·장면 목록·내레이션·스타일을 입력. **한국어로 적어도 된다**:
@@ -203,25 +210,29 @@ flowchart TB
 - **러프컷 합성** — 선택된 컷을 정규화해 디졸브(기본 0.4초)로 잇고, AI 컷의 시작 멈칫·끝 느려짐을 조금 잘라 냄
 - **내레이션** — 장면별 한국어 해설을 TTS로 합성해 장면 길이에 맞춤(최대 1.4배속, 그래도 넘치면 안내).
   프로젝트마다 목소리 선택·미리 듣기, 이 버전의 크기·빠르기. 해설만 고치면 음성만 다시 합성
-- **배경음악** — 영상 전체에 연주곡 한 곡(MiniMax Music 3, 로컬). 곡 설명은 Gemma가 제안하고 고칠 수 있음(영어가 잘 따름).
+- **배경음악** — 영상 전체에 연주곡 한 곡(Stable Audio 3 Medium, 로컬. `MUSIC_ENGINE=minimax`면 MiniMax Music 3 — 다른 소리가 섞여 기본에서 뺌, 2026-11-05). 곡 설명은 Gemma가 제안하고 고칠 수 있음(영어가 잘 따름).
   곡을 60초 이상으로 만들어 **소리 크기가 가장 고른 구간**을 골라 씀(짧게 만들면 도입·끝맺음이 욱여넣어져 출렁였다).
   내레이션이 나오면 자동으로 작아지고, 다음 버전에도 같은 곡이 이어짐("분위기가 안 맞아요" 같은 의견일 때만 바뀜)
-- **로고** — PNG·JPG·WEBP 또는 Illustrator `.ai`(PDF 호환)·`.pdf`(투명 PNG로 변환). 첫·마지막 장면 위 미리보기에서
+- **로고** — PNG·JPG·WEBP 또는 Illustrator `.ai`(PDF 호환)·`.pdf`(투명 PNG로 변환). 올릴 영상 화면(엔딩 카드 등) 위 미리보기에서
   **누르거나 끌어서 위치 지정**(저장 전 벡터 파일도), 크기·불투명도, 보이는 때(전체/처음 N초/끝 N초/타임라인 구간)
 - **타임라인** — 올릴 영상 아래에 장면·자막·로고 막대를 영상 시각에 맞춰 그림. 막대를 끌어 옮기거나 양 끝을 끌어
   자막·로고가 나오는 때를 정하고, 영상 재생 위치와 함께 움직임
 - **자막은 YouTube 자막으로** — 영상에 굽지 않고 내레이션 시각에 맞춘 `.srt`를 만들어 업로드 때 한국어 자막 트랙으로 올림.
   직접 올릴 때를 위해 `.srt` 내려받기 제공
+- **엔딩 카드** — 마지막 장면을 검게 사라지게 한 뒤 배경색 + 로고 + 학과명 카드로 끝냄(`rough_cut._end_card_clip`).
+  페이드아웃은 편집 효과라 AI 프롬프트에서 뺌(`camera.strip_fades`) — AI에게 시키면 장면 안 조명이 꺼지는 장면이 됐다
 - **장면 소리 끄기** — 영상 모델이 만든 효과음을 빼고 내레이션·배경음악만
 
 ### 공개·의견 (④·⑤)
 - **YouTube 업로드** — Google 계정 연결(OAuth PKCE) 후 제작자가 눌러야만 업로드(이어 올리기, 공개 범위, AI 생성 표시) + 자막 트랙.
   연결 없이 직접 올린 영상 ID를 이어 줄 수도 있음
 - **공개 취소** — 댓글을 모으기 전이면 ③ 확인으로 되돌려 올릴 영상만 고쳐 다시 올림(장면은 그대로, 예전 영상은 지우지 않음)
-- **댓글 수집** — YouTube Data API 또는 시뮬레이션, 화면에서 직접 입력·장면별 의견도 가능
+- **댓글 수집** — YouTube Data API 또는 시뮬레이션, 화면에서 직접 입력·장면별 의견도 가능.
+  공개 뒤에는 화면이 1분마다 새 댓글을 자동으로 모으고(`auto-collect`), 댓글이 들어오면 분류 → 묶기까지 자동으로 처리
 - **6축 분류** — 구체성·타당성·심각도·긴급도·품질·멀티레이블 토픽, 댓글 속 `1:23` 같은 시각 → 장면 매핑
 - **2단계 군집화** — 토픽별 그룹 → 그룹 내 HDBSCAN / 계층적 군집화, **5축 우선순위** + 재발 이슈 부스트 + 상반 의견 감지
-- **승인 워크플로** — 클러스터별 승인 / 거절 / 보류, 반영 위치(화면·움직임·편집·소리·내용) 지정
+- **승인 워크플로** — 묶음별로 반영 여부를 정함. 반대 의견이 없는 묶음은 '반영'으로 미리 골라 두고 반대 의견이 있는 묶음만 '결정 전'으로 남김.
+  반영 위치(화면·움직임·편집·소리·내용)를 확인한 뒤 '반영하고 다음 버전 만들기'
 - **다음 버전** — 화면·움직임 의견이 지적한 장면만 다시 만들고 나머지는 재사용. 소리·편집 의견은 **편집 설정**
   (전환·소리 크기·빠르기·장면 길이·속도·순서·자막·배경음악)으로만 반영. 내용 의견은 LLM이 [영상 설명]·[내레이션]만 다시 씀
 - **프롬프트 버전 관리·리포트** — 버전별 diff, 롤백, 반영률·수동 처리 대비 절약 시간·재사용 장면 수
@@ -232,7 +243,7 @@ flowchart TB
 |------|-----------|
 | 백엔드 | Python 3.11, Flask 3.x, SQLAlchemy (SQLite) |
 | ML | sentence-transformers, scikit-learn, hdbscan, transformers |
-| 영상·이미지·음악·글 | ComfyUI (LTX-2.5, Z-Image Turbo, Gemma, MiniMax Music 3), ffmpeg |
+| 영상·이미지·음악·글 | ComfyUI (LTX-2.5, Z-Image Turbo, Gemma, Stable Audio 3 Medium), ffmpeg |
 | 음성 | edge-tts, Supertonic-3, Windows SAPI |
 | UI | Bootstrap 5, Chart.js |
 
@@ -243,9 +254,11 @@ flowchart TB
 | 분류 폴백 (NLI) | `MoritzLaurer/mDeBERTa-v3-base-zeroshot-v2.0` | MIT (게이트됨) | CPU |
 | 영상 생성 | LTX-2.5 (T2V / I2V, ComfyUI, GGUF Q4_K_M) | — | GPU |
 | 첫 프레임 이미지 | Z-Image Turbo | — | GPU |
-| 번역·AI로 채우기·장면 묘사·글 다듬기 | Gemma4 e2b (ComfyUI `TextGenerate`) | — | GPU |
-| 장면 다듬기·AI로 채우기 (큰 모델, 선택) | Gemma4 26B A4B (llama-server, 필요할 때만 켬) | — | GPU+CPU |
-| 배경음악 | MiniMax Music 3 | MiniMax-Music3 Community License (YouTube 설명에 표기) | GPU |
+| 번역·화면용 글·큰 모델을 못 쓸 때 대신 | Gemma4 e2b (ComfyUI `TextGenerate`) | — | GPU |
+| 기획(AI로 채우기·장면 다듬기)·맡기기 질문·AI 점검·참고 사진 읽기·자동 움직임 경로 | Gemma4 26B A4B (llama-server, 필요할 때만 켬) | — | GPU+CPU |
+| 움직임 경로 / 참조 영상 따라 하기 | LTX IC-LoRA Motion Track Control / Union Control | — | GPU |
+| 참고 사진대로 그리기 (`REF_PHOTO_MODE=draw`, 기본 아님) | Qwen-Image-Edit-2511 | — | GPU |
+| 배경음악 | Stable Audio 3 Medium (기본) / MiniMax Music 3 (`MUSIC_ENGINE=minimax`) | Stability AI 라이선스 — YouTube 설명에 "Powered by Stability AI" 표기 / MiniMax-Music3 Community License | GPU |
 | 내레이션 | edge-tts(기본, 인터넷 필요) → Supertonic-3(로컬 CPU) | — | CPU |
 | 영상 생성 (`local` 어댑터) | `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` | Apache 2.0 | GPU |
 
@@ -279,6 +292,7 @@ copy .env.example .env    # 값 채우기 (키가 없어도 동작)
   노드의 패키지는 ComfyUI를 끈 뒤 설치하세요. 켠 채로 설치하면 파일 잠금 때문에 패키지가 깨질 수 있습니다.
 - 러프컷·컷 감지는 ffmpeg를 씁니다(`FFMPEG_PATH` → PATH → imageio-ffmpeg 순으로 찾음).
 - `run.py`는 자동 재시작이 없습니다. **코드를 고친 뒤에는 서버를 다시 켜야** 반영됩니다.
+
 ## 6. 프로젝트 구조
 
 ```
@@ -294,7 +308,10 @@ project_ai_feedback/
 │  │  ├─ narration/            내레이션 TTS (edge/Supertonic 작업자, SAPI) + 장면 길이에 맞추기
 │  │  ├─ orchestrator.py       상태 머신, 단계 계산, 생성 흐름, 부분 재생성, 기획 변경, 데모 재생
 │  │  ├─ auto_pipeline.py      AI 자동 진행: 기획 → 이미지·점검 → 컷·점검 → 러프컷
-│  │  ├─ intake.py auto_review.py face.py   부족한 것만 묻기 / AI 점검 / 얼굴 사진 합성
+│  │  ├─ intake.py auto_review.py face.py ref_photos.py   부족한 것만 묻기 / AI 점검 / 참고 사진(생김새 읽기)
+│  │  ├─ auto_motion.py        자동 움직임 경로 (26B 비전으로 물체·집게 위치 찾기)
+│  │  ├─ plan_rules.py text_free.py camera.py   제작 원칙 질문 / 글자 없는 화면 / 고정 카메라·페이드 빼기
+│  │  ├─ photo_scenes.py reference_video.py tone.py   사진 → 장면 / 참조 영상 움직임 / Qwen 그림 색 낮추기
 │  │  ├─ jobs.py               GPU 작업 큐 (워커 스레드 1개)
 │  │  ├─ storyboard_model.py   스토리보드 스키마, 타임스탬프 → 장면 매핑
 │  │  ├─ feedback_target.py    의견의 반영 위치, 길이 요청 읽기, 장면 묘사 고쳐 쓰기
@@ -305,27 +322,30 @@ project_ai_feedback/
 │  │  ├─ motion_tracks.py      움직임 경로: 로봇팔 프리셋 계산(순·역기구학), 저장 형식, 생성 해상도로 변환
 │  │  ├─ motion_plan.py        동작 문장 → 관절 각도 계획 (LLM, 검사 포함)
 │  │  ├─ ko_en.py draft_fill.py scene_refine.py   한국어 입력 → 영어, AI로 채우기, 장면 다듬기
-│  │  ├─ comfy_text.py translate.py   Gemma 글 생성(이미지 입력), 화면용 영→한 번역 캐시
+│  │  ├─ comfy_text.py translate.py translate_worker.py   Gemma 글 생성(이미지 입력), 화면용 영→한 번역 캐시
 │  │  ├─ storyboard_import.py video_import.py   콘티 엑셀 / 완성 영상 불러오기
 │  │  ├─ approval.py           클러스터 저장·승인 적용·롤백·재발 추적
 │  │  ├─ prompt_builder.py prompt_updater.py   프롬프트 문서 구성·파싱 / 다음 버전 프롬프트
 │  │  ├─ llm.py                Claude → Ollama → ComfyUI Gemma → 템플릿
 │  │  ├─ youtube_client.py youtube_upload.py   댓글 수집 / 업로드·자막(OAuth + 이어 올리기)
 │  │  └─ metrics.py            반영률·시간 절약 지표
-│  ├─ routes/                  session.py(화면·API), devtest.py(점검 페이지)
+│  ├─ routes/                  session.py(화면·API), devtest.py(점검 페이지), demo.py(데모 앱 대화형 시작)
 │  ├─ templates/               home, index, _app_shell, session/{detail, create, import, _plan_form, _scene_viewer, _timeline, review, …}
 │  └─ static/                  css/style.css, js/round_view.js(상태 줄), devtest.js·pipeline_stepper.js(점검 페이지)
-├─ tests/                      fake_comfyui.py, video_checks.py, custom_video_checks.py (run_check.py가 호출)
+├─ tests/                      fake_comfyui.py, video_checks.py, custom_video_checks.py, auto_checks.py (run_check.py가 호출)
 ├─ promo_draft/                학과 홍보영상 초안 CLI (run.py + storyboard_*.yaml, 결과는 outputs/)
 │  └─ workflows/               ComfyUI Export(API) 워크플로 JSON + mapping.yaml — 앱도 여기서 읽음
-│                              (ltx25_t2v · ltx25_i2v · ltx25_flf2v · ltx25_motion · zimage_t2i)
+│                              (ltx25_t2v · ltx25_i2v · ltx25_flf2v · ltx25_motion · ltx25_union · zimage_t2i · qwen_face_t2i)
 ├─ instance/                   pipeline.db, 영상·로고·토큰 (git 제외)
-├─ docs/                       feedback_loop.html (피드백 루프 설명 그림)
+├─ instance_demo/              데모 앱 전용 작업 폴더 (git 제외)
+├─ docs/                       feedback_loop.html (피드백 루프 설명 그림), project_intro.html (프로젝트 소개 한 장)
 ├─ _archive/                   쓰지 않는 예전 파일 보관 (git 제외, 지워도 동작에 영향 없음)
 ├─ config.py                   모든 설정 (.env 우선)
 ├─ run.py                      앱 실행
 ├─ run_check.py                전체 검증
 ├─ run_cluster.py              수동 분류·군집화
+├─ run_demo.py                 시연용 데모 앱 실행 (5001번, instance_demo)
+├─ demo_setup.py               실제 DB에서 데모 프로젝트 복사
 ├─ demo_reset.py               데모 프로젝트를 처음으로 되돌림
 ├─ requirements.txt            기본 의존성 (CPU만으로 동작)
 ├─ requirements-video.txt      local(diffusers) 어댑터용 GPU 의존성
@@ -371,7 +391,7 @@ project_ai_feedback/
 - 상태 전이는 `orchestrator.advance(round, to_state)` **한 곳에서만** 수행하며, 허용되지 않은 전이는 `InvalidTransition`.
 - 같은 단계의 반복(댓글 추가·재분류·재군집화)은 자기 자신으로의 전이로 허용.
 - 화면의 단계 탭: ② 제작 = 장면별 영상(이미지 → 컷), ③ 확인 = 올릴 영상 합성·확인. 러프컷 합성 중에는 ③에 진행을 표시.
-- 상태 API `GET /api/rounds/<id>/status`, 제어 API `POST /api/rounds/<id>/{retry,advance,escalate,approve-video,cancel,…}`.
+- 상태 API `GET /api/rounds/<id>/status`, 제어 API `POST /api/rounds/<id>/{retry,advance,approve-video,cancel,rough-cut,replan,auto-collect}`.
 
 ## 8. 피드백 처리 알고리즘
 
@@ -475,10 +495,10 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 임베딩        mpnet-base-v2 → MiniLM-L12-v2 → TF-IDF
 영상 생성     comfyui(LTX-2.5) → mock
 글 다듬기     Claude API → Ollama(로컬) → ComfyUI Gemma(로컬) → 템플릿
-장면 다듬기   Gemma4 26B(llama-server) → Gemma4 e2b(ComfyUI)
+기획·AI 점검 Gemma4 26B(llama-server) → Gemma4 e2b(ComfyUI)
 번역          ComfyUI Gemma → llm.py → 영어만 표시
 내레이션      edge-tts → Supertonic-3 (VOICE_ADAPTER / VOICE_FALLBACK)
-배경음악      MiniMax Music 3 (ComfyUI) → 음악 없이 합성하고 사유 표시
+배경음악      Stable Audio 3 Medium (ComfyUI) → 음악 없이 합성하고 사유 표시
 댓글          YouTube Data API / 시뮬레이션 / 화면 직접 입력
 ```
 
@@ -490,11 +510,12 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 |------|--------|------|
 | `VIDEO_GENERATOR_ADAPTER` | `comfyui` | `comfyui` / `local` / `mock` |
 | `AUTO_REVIEW_MAX_RETRIES` / `AUTO_REVIEW_MIN_SCORE` | `2` / `6` | AI 점검: 장면당 다시 만드는 최대 횟수 / 묘사 일치 통과 점수(0~10) |
-| `FACESWAP_PYTHON` / `FACESWAP_SCRIPT` | (비움) | 얼굴 합성 가상환경의 python.exe / `swap.py`. 비우면 얼굴 사진 기능 꺼짐 |
+| `REF_PHOTO_MODE` | `reference` | 참고 사진 쓰는 방식: `reference`(생김새를 읽어 장면 묘사에 넣음, Qwen 안 씀) / `draw`(예전: Qwen으로 사진대로 그림) |
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI 서버 |
 | `COMFYUI_IMAGE_FIRST` | `false` | 첫 프레임 이미지 먼저 생성 후 I2V (권장 `true`) |
 | `COMFYUI_STAGED_REVIEW` | `false` | 이미지 → 컷 → 러프컷 단계별 확인 (권장 `true`) |
 | `COMFYUI_WORKFLOW_MOTION` | `ltx25_motion` | 움직임 경로가 있는 장면에 쓰는 워크플로 |
+| `AUTO_MOTION` | `true` | 자동 진행에서 움직임 경로를 26B 비전으로 자동 계산 |
 | `STORYBOARD_SHOT_SECONDS` / `WIDTH` / `HEIGHT` / `FPS` | `5` / `576` / `960` / `24` | 장면 기본값 (프로젝트의 화면 비율에 맞게 배치) |
 | `SHOT_MAX_SECONDS` | `8` | 의견으로 장면을 늘릴 때 최대 길이 |
 | `CLIP_TRIM_HEAD_SEC` / `CLIP_TRIM_TAIL_SEC` | `0.15` / `0.1` | 러프컷에서 AI 컷 앞뒤를 잘라 내는 길이 |
@@ -502,7 +523,7 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 | `NARRATION_MAX_SPEEDUP` | `1.4` | 장면보다 긴 문장을 이만큼까지 빠르게 |
 | `BGM_AUTO` / `MUSIC_MIN_SECONDS` | `true` / `60` | 배경음악 자동 / 곡을 이 길이 이상으로 만들어 고른 구간을 씀 |
 | `TRANSLATE_ENABLED` | `true` | 장면 묘사 한국어 번역 표시 |
-| `REFINE_LLAMA_SERVER` / `REFINE_LLAMA_MODEL` | (비움) | 장면 다듬기용 큰 모델 서버·모델 파일. 비우면 Gemma4 e2b로 |
+| `REFINE_LLAMA_SERVER` / `REFINE_LLAMA_MODEL` | (비움) | 큰 모델(기획·맡기기 질문·AI 점검) 서버·모델 파일. 비우면 Gemma4 e2b로 |
 | `SIMULATION_MODE` | `true` | 댓글 시뮬레이션 (`false`면 YouTube Data API) |
 | `REQUIRE_VIDEO_APPROVAL` | `true` | 업로드 전 사람 확인 |
 | `ANTHROPIC_API_KEY` / `YOUTUBE_API_KEY` | (없어도 동작) | 선택 기능용 키 |
@@ -520,7 +541,7 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 | `HDBSCAN` 밀도 기반 군집화 | 멀티레이블 토픽 태깅, 2단계 클러스터링 |
 | `transformers` zero-shot NLI | 카테고리별 적응형 임계값, 대형 클러스터 서브클러스터링 |
 | `difflib.unified_diff` 프롬프트 diff | 품질 가중 대표 텍스트, 응집도 점수, 추출 요약 |
-| ComfyUI · LTX-2.5 · Z-Image · Gemma · MiniMax Music · llama.cpp | 5축 우선순위 + 재발 부스트 + 상반 의견 감지 |
+| ComfyUI · LTX-2.5 · Z-Image · Gemma · Stable Audio · llama.cpp | 5축 우선순위 + 재발 부스트 + 상반 의견 감지 |
 | ffmpeg (xfade·overlay·sidechaincompress) | 상태 머신·작업 큐·부분 재생성·반영 위치 판단·편집 설정 |
 | edge-tts · Supertonic | 내레이션 길이 맞추기, 의견 → 장면 길이, 배경음악 고른 구간 고르기 |
 | pypdfium2 · Pillow | 완성 영상 컷 감지, 콘티 엑셀 불러오기, 타임라인, YouTube 자막 업로드 |
@@ -533,7 +554,7 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 
 - pytest가 아니라 **`run_check.py` 하나가 전체 검증**입니다. 임시 DB + 작업 큐 동기 실행 + mock 어댑터 + 시뮬레이션으로
   2차 버전까지 돌리고, 가짜 ComfyUI(`tests/fake_comfyui.py`)·가짜 Google 서버로 영상·업로드 흐름을 확인합니다.
-  실제 ffmpeg로 러프컷·로고·자막·배경음악을 합성해 픽셀·소리 크기까지 봅니다. 약 270개 항목, 몇 분 걸립니다.
+  실제 ffmpeg로 러프컷·로고·자막·배경음악을 합성해 픽셀·소리 크기까지 봅니다. 약 390개 항목, 몇 분 걸립니다.
 - 끝에 "모든 검증 통과" 또는 "실패 N건: …"(종료 코드 1)을 출력합니다. 실제 `instance/pipeline.db`는 건드리지 않습니다.
 - `/dev/pipeline-test` — `[TEST]` 세션을 만들어 영상 생성부터 2차 부분 재생성까지 단계별로 실행하고 기대 동작을 자동 판정.
 
@@ -545,13 +566,21 @@ P = 0.35·빈도 + 0.25·품질 + 0.20·심각도 + 0.12·긴급도 + 0.08·타�
 댓글 수집·분류·군집화·승인·반영은 실제로 처리합니다.
 
 ```powershell
+.\venv\Scripts\python demo_setup.py      # 실제 DB에서 데모 프로젝트·영상을 데모 앱 폴더로 복사
 .\venv\Scripts\python demo_reset.py      # 데모 프로젝트를 ① 기획 단계로 되돌림 (리허설 뒤)
+.\venv\Scripts\python run_demo.py        # 데모 앱 → http://127.0.0.1:5001
 ```
+
+- **데모 앱은 실제 앱과 분리**됩니다 — `run_demo.py`가 `DEMO_MODE=true`와 따로 된 작업 폴더 `instance_demo`(DB·영상·토큰·분류기)로 띄웁니다.
+- 데모 앱의 `/`는 대화형 시작 화면 `/demo`로 이어집니다. 설명을 적고 준비된 질문에 답하면 'AI 기획 중'을 보여 준 뒤 준비된 결과로 이어집니다.
+- 분류기는 승인 때 학습하므로 `demo_reset.py`가 분류기 파일도 기준 상태로 되돌립니다. 리허설은 데모 앱을 새로 켠 뒤에 합니다.
+- 촬영 순서는 `D:\capstone\demo_kit\촬영_순서.md`에 있습니다.
 
 ## 16. 알려진 한계
 
-- AI 점검은 작은 비전 모델(Gemma4 e2b)이 판단해 틀릴 수 있음 — 그래서 마지막 사람 확인은 남겨 둠. 모델이 답하지 못하면 '점검 못 함'으로 표시
-- 얼굴 사진으로 인물 그리기는 Qwen-Image-Edit-2511(Apache 2.0)을 쓴다. 쓸 수 없을 때의 예비 경로인 inswapper는 128px라 흐리고 비상업 연구용 라이선스라 상업적 사용 불가 — 상업 용도면 `FACESWAP_*`를 비워 끈다
+- AI 점검은 비전 모델(Gemma4 26B, 못 쓰면 e2b)이 판단해 틀릴 수 있음 — 앞뒤로 겹쳐 보이는 물체나 동작이 끝난 프레임을 미달로 오판하기도 함.
+  그래서 마지막 사람 확인('문제없음으로 확인')은 남겨 둠. 모델이 답하지 못하면 '점검 못 함'으로 표시
+- 참고 사진은 생김새를 글로 옮겨 그리므로 얼굴·물건이 사진과 똑같지는 않다(장면마다 같은 사람·물건처럼 보이게 하는 것이 목적).
 - 장면 간 인물·대상 일관성은 샷 묘사에 외모를 반복해 적는 것에 의존
 - 배경음악은 모델이 곡 구조를 정하므로 고른 구간을 골라도 작아지는 곳이 남을 수 있음 — "다른 곡으로 바꾸기"로 다시 뽑음
 - Google 감사를 받지 않은 프로젝트로 올린 영상은 YouTube가 비공개로 고정할 수 있음. 자막 업로드에는 `youtube.force-ssl` 권한이 필요해

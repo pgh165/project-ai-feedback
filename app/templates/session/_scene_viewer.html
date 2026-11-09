@@ -4,7 +4,7 @@
 {% import "_ui.html" as ui %}
 {% set image_mode = viewer_mode == 'images' %}
 {% set can_regen = is_current and round.status in ('images_ready', 'clips_ready', 'video_ready') %}
-{% set can_comment = is_current and round.status in ('uploaded', 'feedback_collected') %}
+{% set can_comment = is_current and round.status in ('uploaded', 'feedback_collected', 'feedback_classified', 'pending_review') %}
 <section class="scene-section {{ 'is-main' if viewer_mode != 'after' }} {{ 'is-wide' if session.aspect_ratio == '16:9' }}" aria-labelledby="scene-title"
          data-regen-url="{{ url_for('session.images_regenerate' if image_mode else 'session.clips_regenerate', round_id=round.id) }}"
          data-notes-url="{{ url_for('session.shot_note_delete', round_id=round.id) }}">
@@ -107,6 +107,8 @@
       {% endif %}
     </div>
     {% if can_regen and sc.image %}
+    {# 데모 앱에서는 '움직임 지정'·'참조 영상으로 움직임 따라 하기'를 숨긴다 — 움직임은 AI가 정한다(자동 움직임 경로), 시연에 필요 없음 (2026-11-07 사용자) #}
+    {% if not config.DEMO_MODE %}
     {% set motion_stale = sc.motion and sc.motion.image != sc.image.image_path %}
     <details class="motion-panel" data-url="{{ url_for('session.shot_motion', round_id=round.id, shot_id=sc.id) }}"
              data-image-step="{{ '1' if image_mode else '0' }}" data-motion="{{ sc.motion|tojson|forceescape }}">
@@ -157,6 +159,7 @@
         </div>
       </form>
     </details>
+    {% endif %}{# not DEMO_MODE #}
     {% endif %}
   </article>
   {% endfor %}

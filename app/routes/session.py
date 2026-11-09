@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -251,16 +252,14 @@ _FACE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 @bp.route("/session/new")
 def new():
     """첫 화면 다음: 질문·가정 화면. 질문은 화면이 /session/new/analyze로 받아 온다 (LLM이 몇 초 걸린다)."""
-    from ..pipeline import face
+    from ..pipeline import ref_photos
 
     idea = request.args.get("idea", "").strip()[:2000]
     if not idea:
         return redirect(url_for("session.home"))
     aspect = request.args.get("aspect", "")
     return render_template("session/intake.html", idea=idea, aspect=aspect if aspect in ASPECTS else "9:16",
-                           face_available=face.available(current_app.config) or (  # Qwen 그리기 또는 inswapper 합성
-                               Path(current_app.config["COMFYUI_WORKFLOWS_DIR"])
-                               / f"{current_app.config.get('COMFYUI_WORKFLOW_FACE', 'qwen_face_t2i')}.json").exists())
+                           ref_reference=ref_photos.reference_mode(current_app.config))  # 참고 사진(인물·물건·장소) 칸 문구
 
 
 @bp.route("/session/new/analyze", methods=["POST"])
@@ -345,7 +344,7 @@ def auto_create():
         session.intake_json = json.dumps({**json.loads(session.intake_json), "music_file": song_path,
                                           "assumptions": {**choice, "music": "on"}, "shown": shown},
                                          ensure_ascii=False)
-    # 물건·장소 참조 사진 여러 장 (이름·종류와 짝) — 장면에 그 이름이 나오면 함께 보고 그린다
+    # 참고 사진 여러 장 (이름·종류와 짝: 인물·물건·장소) — 기본은 생김새를 읽어 장면 묘사에 넣는다 (ref_photos)
     from ..pipeline import ref_photos
     refs = []
     for i, (f, name, kind) in enumerate(zip(request.files.getlist("ref_file"), request.form.getlist("ref_name"),
@@ -355,7 +354,7 @@ def auto_create():
         ext = os.path.splitext(f.filename)[1].lower()
         if ext not in _FACE_EXTS:
             db.session.rollback()
-            flash("참조 사진은 JPG·PNG·WEBP만 올릴 수 있습니다.", "warning")
+            flash("참고 사진은 JPG·PNG·WEBP만 올릴 수 있습니다.", "warning")
             return redirect(url_for("session.new", idea=idea, aspect=aspect))
         folder = os.path.join(current_app.instance_path, "assets", f"session_{session.id}")
         os.makedirs(folder, exist_ok=True)
@@ -384,7 +383,7 @@ def auto_create():
     if photos:
         shown.append(f"장면 사진 {len(photos)}장 — 사진 하나가 장면 하나, 사진 그대로 움직여요")
     if refs:
-        shown.append("참조 사진: " + ", ".join(r["name"] for r in refs))
+        shown.append("참고 사진: " + ", ".join(f'{r["name"]}({ref_photos.KINDS.get(r["kind"], "물건")})' for r in refs))
     if refs or photos:
         session.intake_json = json.dumps({**json.loads(session.intake_json), "shown": shown}, ensure_ascii=False)
     from ..pipeline.prompt_builder import render_sections
@@ -857,6 +856,32 @@ def save_narration(session_id):
     return _back(session_id, "confirm")
 
 
+@bp.route("/round/<int:round_id>/end-card.jpg")
+def end_card_preview(round_id):
+    """꾸미기 로고 미리보기 바탕: 올릴 영상의 엔딩 카드 가운데 화면 (영상 폴더에 한 번 뽑아 두고, 영상이 바뀌면 다시)."""
+    from ..pipeline import video_import
+    from ..pipeline.video_generator.comfyui import rough_cut
+
+    round_obj = _get_round(round_id)
+    try:
+        card = json.loads(round_obj.timeline_json or "{}").get("end_card")
+    except ValueError:
+        card = None
+    video = round_obj.video_path
+    if not card or not video or not os.path.exists(video):
+        abort(404)
+    out = Path(video).with_name("end_card_preview.jpg")
+    if not out.exists() or out.stat().st_mtime < os.path.getmtime(video):
+        ffmpeg = rough_cut.resolve_ffmpeg(current_app.config)
+        if not ffmpeg:
+            abort(404)
+        try:
+            video_import.grab_frame(ffmpeg, video, (float(card[0]) + float(card[1])) / 2, out, width=960)
+        except Exception:
+            abort(404)
+    return send_file(out, mimetype="image/jpeg", max_age=0)
+
+
 @bp.route("/round/<int:round_id>/captions.srt")
 def round_captions(round_id):
     """이 버전의 YouTube 자막 파일 — 직접 올리거나 확인할 때 받는다."""
@@ -898,7 +923,20 @@ def _preview_frame(session, round_obj, storyboard):
             images[r.shot_id] = url_for("session.shot_image", render_id=src.id)
     order = [s["id"] for s in storyboard["shots"]] if storyboard else sorted(images)
     shown = [images[i] for i in order if i in images]
-    return {"w": width, "h": height, "first": shown[0] if shown else "", "last": shown[-1] if shown else ""}
+    return {"w": width, "h": height, "first": shown[0] if shown else "", "last": shown[-1] if shown else "",
+            "by_shot": images}
+
+
+def _logo_scene_image(frame, timeline, logo):
+    """로고 미리보기 바탕: 로고가 실제로 보이기 시작하는 장면의 이미지 (타임라인의 로고 구간 시작 → 그 장면).
+    타임라인이 없으면 보이는 때 설정으로(마지막 장면에서만 → 마지막 장면, 그 밖 → 첫 장면)."""
+    if timeline and timeline.get("logo"):
+        start = float(timeline["logo"][0])
+        scenes = timeline.get("scenes") or []
+        hit = next((sc for sc in scenes if sc["start"] <= start < sc["end"]), scenes[-1] if scenes else None)
+        if hit and frame["by_shot"].get(hit["id"]):
+            return frame["by_shot"][hit["id"]]
+    return frame["last"] if logo.get("show") == "last" else frame["first"]
 
 
 def _decorate_view(session, round_obj):
@@ -915,7 +953,20 @@ def _decorate_view(session, round_obj):
     has_text = bool(storyboard and any((s.get("narration") or s.get("subtitle") or "").strip()
                                        for s in storyboard["shots"])) or "[내레이션]" in (round_obj.prompt_text or "")
     end_card = overlay.load_end_card(session)
-    return {"logo": logo, "has_logo_file": has_file, "frame": _preview_frame(session, round_obj, storyboard),
+    frame = _preview_frame(session, round_obj, storyboard)
+    timeline = _timeline_view(round_obj, logo, has_file)
+    if timeline and timeline.get("end_card") and round_obj.video_path and os.path.exists(round_obj.video_path):
+        frame["logo"] = url_for("session.end_card_preview", round_id=round_obj.id,
+                                v=int(os.path.getmtime(round_obj.video_path)))  # 엔딩 카드 화면 (영상을 다시 만들면 새로)
+    else:
+        frame["logo"] = _logo_scene_image(frame, timeline, logo)
+    if not logo.get("enabled"):
+        when = "영상 위에는 넣지 않음" + (" (엔딩 카드에만)" if end_card["enabled"] and end_card["logo"] else "")
+    elif timeline and timeline.get("logo"):
+        when = f"{timeline['logo'][0]:.1f}초 ~ {timeline['logo'][1]:.1f}초"
+    else:
+        when = overlay.LOGO_SHOW.get(logo.get("show"), "")
+    return {"logo": logo, "has_logo_file": has_file, "frame": frame, "logo_when": when,
             "end_card": end_card,
             "logo_url": url_for("session.logo_image", session_id=session.id) if has_file else "",
             "plan": plan, "has_text": has_text, "editable": round_obj.status in orchestrator.BEFORE_UPLOAD,
@@ -929,7 +980,7 @@ def _decorate_view(session, round_obj):
                           if end_card["enabled"] else [])
                        + [line for line in edit_plan.describe(plan, storyboard) if line.startswith("자막")],
             "sound": _sound_view(session, round_obj, plan, storyboard, music),
-            "timeline": _timeline_view(round_obj, logo, has_file),
+            "timeline": timeline,
             "captions_url": (url_for("session.round_captions", round_id=round_obj.id)
                              if orchestrator.captions_file(round_obj) else "")}
 
@@ -946,8 +997,14 @@ def _timeline_view(round_obj, logo, has_logo_file):
         return None
     total = float(data["total"])
     # 로고는 지금 저장된 설정으로 다시 계산한다 (영상을 다시 만들기 전에 설정을 바꿨을 수 있다)
-    data["logo"] = (list(overlay.logo_range(logo, total, float(data.get("last_start", total))))
-                    if has_logo_file and logo["enabled"] else None)
+    card = overlay.load_end_card(round_obj.session)
+    if has_logo_file and logo["enabled"]:
+        data["logo"] = list(overlay.logo_range(logo, total, float(data.get("last_start", total))))
+    elif has_logo_file and card["enabled"] and card["logo"] and data.get("end_card"):
+        # 엔딩 카드에만 로고 — 막대는 엔딩 카드 구간. 앞 장면으로 끌어 늘리면 그 구간에 영상 위 로고가 켜진다 (2026-11-07 사용자)
+        data["logo"] = list(data["end_card"])
+    else:
+        data["logo"] = None
     return data
 
 
@@ -1042,7 +1099,7 @@ def shot_feedback(session_id):
     """장면 1개에 대한 의견 — 그 장면의 시작 시각을 타임스탬프로 달아 기존 장면 매핑을 그대로 쓴다."""
     from ..pipeline import storyboard_model as sbm
     round_obj = _get_session(session_id).current_round
-    if not _require_status(round_obj, "uploaded", "feedback_collected"):
+    if not _require_status(round_obj, *_FEEDBACK_OPEN):
         return _back(session_id)
     storyboard = round_obj.storyboard_data
     shot_id = request.form.get("shot_id", "")
@@ -1054,8 +1111,7 @@ def shot_feedback(session_id):
         return _back(session_id)
     orchestrator.add_comments(round_obj, [{"author": "manual", "text": text, "source": "scene",
                                            "timestamp_sec": start}])
-    flash(f"장면 {shot_id} 의견을 추가했습니다.", "success")
-    return _back(session_id)
+    return _process_feedback(session_id, round_obj, f"장면 {shot_id} 의견을 추가했습니다.")
 
 
 # ── 프롬프트 수동 편집 ───────────────────────────────────────────────────
@@ -1365,6 +1421,31 @@ def shot_select(render_id):
     return jsonify(ok=True, render_id=render_id)
 
 
+@bp.route("/api/shots/<int:render_id>/confirm", methods=["POST"])
+def shot_confirm(render_id):
+    """AI 점검에서 미달로 나온 장면을 사람이 보고 '문제없음'으로 확인한다 (ok=0이면 확인 취소).
+    AI 점검 결과는 그대로 두고 review_json["human"]만 남긴다 — ③ 확인의 '확인 필요'에서 빠진다.
+    작은·큰 모델 모두 앞뒤로 겹쳐 보이는 물체를 붙었다고 오판한다(2026-11-07) — 마지막 판단은 사람이 한다."""
+    from datetime import datetime
+
+    render = db.session.get(ShotRender, render_id)
+    if render is None:
+        abort(404)
+    round_obj = render.round
+    if round_obj.status not in ("images_ready", "clips_ready", "video_ready"):
+        return _error("확인 단계에서만 표시할 수 있습니다.", 409)
+    review = render.review
+    if (request.form.get("ok") or (request.get_json(silent=True) or {}).get("ok", "1")) in ("0", 0, False):
+        review.pop("human", None)
+    else:
+        review["human"] = {"ok": True, "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    render.review_json = json.dumps(review, ensure_ascii=False)
+    db.session.commit()
+    if request.is_json:
+        return jsonify(ok=True, confirmed="human" in review)
+    return redirect(url_for("session.detail", session_id=round_obj.session_id) + "#confirm")
+
+
 @bp.route("/api/shots/<int:render_id>/end-frame", methods=["POST"])
 def shot_end_frame(render_id):
     """컷 확인 '이 순간을 끝으로 다시 만들기' — body {"at": 초}."""
@@ -1484,15 +1565,21 @@ def decorate(session_id):
                     last_sec=request.form.get("logo_last_sec", logo["last_sec"]),
                     x=request.form.get("logo_x", logo["x"]), y=request.form.get("logo_y", logo["y"]))
     if request.form.get("timeline_settings") and logo["file"] and request.form.get("logo_start"):
-        # 타임라인에서 끈 로고 구간 → '정한 구간' 모드. 끝까지 끌었으면 0(= 끝까지)으로 둔다
+        # 타임라인에서 끈 로고 구간 → '정한 구간' 모드. 장면 끝(엔딩 카드 시작)이나 영상 끝까지 끌었으면 0(= 끝까지)
+        card_at = None
         try:
             start, end = float(request.form["logo_start"]), float(request.form["logo_end"])
-            total = float(json.loads(round_obj.timeline_json or "{}").get("total") or 0)
+            tl = json.loads(round_obj.timeline_json or "{}")
+            total = float(tl.get("total") or 0)
+            card_at = float(tl["end_card"][0]) if tl.get("end_card") else None
         except (TypeError, ValueError, KeyError):
             start = end = None
-        if start is not None and end - start >= 0.1:
-            logo.update(show="range", start_sec=round(start, 2),
-                        end_sec=0.0 if total and end >= total - 0.05 else round(end, 2))
+        if start is not None and card_at is not None and start >= card_at - 0.05:
+            logo["enabled"] = False  # 엔딩 카드 안에서만 → 카드의 로고만 (영상 위 로고 끔)
+        elif start is not None and end - start >= 0.1:
+            scenes_end = card_at if card_at is not None else total
+            logo.update(enabled=True, show="range", start_sec=round(start, 2),
+                        end_sec=0.0 if scenes_end and end >= scenes_end - 0.05 else round(end, 2))
     end_card = overlay.load_end_card(session)
     if request.form.get("end_card_settings"):  # 엔딩 카드 · 끝 페이드아웃 (체크 해제는 폼에 값이 오지 않는다)
         end_card.update(enabled=request.form.get("end_card_enabled") == "on",
@@ -1725,31 +1812,80 @@ def youtube_disconnect():
     return redirect(nxt if nxt.startswith("/") else url_for("session.index"))
 
 
+# 댓글을 넣을 수 있는 단계 — 분류·묶은 뒤에도 더 넣을 수 있고, 넣으면 처음부터 다시 분류·묶는다 (검토 결정은 새로)
+_FEEDBACK_OPEN = ("uploaded", "feedback_collected", "feedback_classified", "pending_review")
+
+
+def _process_feedback(session_id, round_obj, lead):
+    """댓글을 넣은 뒤 분류 → 묶기까지 이어서 하고, 묶음이 나오면 바로 검토 화면으로 보낸다 (2026-11-08 사용자)."""
+    try:
+        constructive, started = orchestrator.process_feedback(round_obj, _classifier())
+    except PipelineError as exc:
+        flash(f"{lead} {exc}", "warning")
+        return _back(session_id)
+    db.session.refresh(round_obj)
+    if not started:
+        flash(f"{lead} 아직 고칠 점이 담긴 의견이 없습니다. 댓글이 더 달리면 다시 모아 주세요.", "info")
+        return _back(session_id)
+    if round_obj.status == "pending_review":  # 동기 실행(JOBS_SYNC)이면 묶음이 이미 나왔다
+        flash(f"{lead} 쓸 만한 의견 {constructive}개를 골라 비슷한 것끼리 묶었습니다. 반영할 묶음을 고르세요.", "success")
+        return redirect(url_for("session.review", session_id=session_id))
+    if round_obj.generation_error:
+        flash(round_obj.generation_error, "danger")
+        return _back(session_id)
+    flash(f"{lead} 쓸 만한 의견 {constructive}개를 골라 비슷한 것끼리 묶는 중입니다.", "success")
+    return _back(session_id)
+
+
+@bp.route("/api/rounds/<int:round_id>/auto-collect", methods=["POST"])
+def round_auto_collect(round_id):
+    """공개 뒤 화면이 1분마다 부른다 — 새 댓글이 있으면 모아 분류 → 묶기까지 (사람은 누를 것 없음, 2026-11-08).
+    아직 묶음이 없는 단계에서만 돈다. 묶은 뒤 더 모으려면 '댓글 다시 모으기'를 누른다(결정이 초기화되므로)."""
+    round_obj = _get_round(round_id)
+    if round_obj.status not in ("uploaded", "feedback_collected", "feedback_classified") or round_obj.generation_error:
+        return jsonify(state=round_obj.status, added=0)
+    try:
+        added = orchestrator.collect(round_obj, current_app.config)
+        if added or (round_obj.status == "feedback_collected" and round_obj.feedbacks):
+            orchestrator.process_feedback(round_obj, _classifier())
+    except Exception as exc:  # 수집 실패(할당량·네트워크)는 다음 차례에 다시 — 화면에는 알리기만
+        db.session.rollback()
+        current_app.logger.warning("자동 댓글 수집 실패: %s", exc)
+        return jsonify(state=db.session.get(VideoRound, round_id).status, added=0, error=str(exc))
+    return jsonify(state=db.session.get(VideoRound, round_id).status, added=added,
+                   review_url=url_for("session.review", session_id=round_obj.session_id))
+
+
 @bp.route("/session/<int:session_id>/collect", methods=["POST"])
 def collect(session_id):
     round_obj = _get_session(session_id).current_round
-    if not _require_status(round_obj, "uploaded", "feedback_collected"):
+    if not _require_status(round_obj, *_FEEDBACK_OPEN):
         return _back(session_id)
     try:
         count = orchestrator.collect(round_obj, current_app.config)
     except Exception as exc:
         flash(f"댓글 수집 실패: {exc}", "danger")
         return _back(session_id)
-    flash(f"댓글 {count}개를 수집했습니다.", "success")
-    return _back(session_id)
+    if not count:
+        flash("새 댓글이 없습니다.", "info")
+        if round_obj.status != "feedback_collected" or not round_obj.feedbacks:
+            return _back(session_id)
+    return _process_feedback(session_id, round_obj, f"새 댓글 {count}개를 모았습니다." if count else "")
 
 
 @bp.route("/session/<int:session_id>/comments", methods=["POST"])
 def add_comments(session_id):
     """시청자 댓글 직접 입력 (한 줄에 하나) — YouTube 없이 참여를 받을 때 사용."""
     round_obj = _get_session(session_id).current_round
-    if not _require_status(round_obj, "uploaded", "feedback_collected"):
+    if not _require_status(round_obj, *_FEEDBACK_OPEN):
         return _back(session_id)
     lines = [l.strip() for l in request.form.get("comments", "").splitlines() if l.strip()]
+    if not lines:
+        flash("의견을 한 줄 이상 적어 주세요.", "warning")
+        return _back(session_id)
     orchestrator.add_comments(
         round_obj, [{"author": "manual", "text": l, "source": "manual"} for l in lines])
-    flash(f"댓글 {len(lines)}개를 추가했습니다.", "success")
-    return _back(session_id)
+    return _process_feedback(session_id, round_obj, f"의견 {len(lines)}개를 추가했습니다.")
 
 
 # ── 분류 / 클러스터링 ────────────────────────────────────────────────────
@@ -1774,10 +1910,19 @@ def toggle_feedback(session_id, feedback_id):
     feedback = db.session.get(Feedback, feedback_id)
     if feedback is None or feedback.round_id != round_obj.id:
         abort(404)
-    if _require_status(round_obj, "feedback_classified"):
+    if _require_status(round_obj, "feedback_classified", "pending_review"):
         feedback.is_constructive = not feedback.is_constructive
         feedback.needs_review = False
         db.session.commit()
+        # 판정이 바뀌면 묶음도 다시 만든다 (묶기는 분류 뒤 자동으로 이어지므로)
+        if any(f.is_constructive for f in round_obj.feedbacks):
+            orchestrator.start_clustering(round_obj)
+            db.session.refresh(round_obj)
+            if round_obj.status == "pending_review":
+                flash("판정을 바꿔 의견을 다시 묶었습니다. 검토 결정은 새로 해 주세요.", "info")
+        elif round_obj.status == "pending_review":
+            orchestrator.advance(round_obj, "clustering", commit=False)
+            orchestrator.advance(round_obj, "feedback_classified")
     return _back(session_id)
 
 
@@ -1887,19 +2032,34 @@ def api_preview(session_id):
     return jsonify(diff=approval.preview_prompt_change(round_obj, current_app.config))
 
 
+_APPLY_LOCK = threading.Lock()
+
+
 @bp.route("/session/<int:session_id>/apply", methods=["POST"])
 def apply(session_id):
-    round_obj = _get_session(session_id).current_round
-    if not _require_status(round_obj, "pending_review"):
-        return _back(session_id)
-    try:
-        next_round, source = approval.apply_approved_clusters(
-            round_obj, current_app.config, classifier=_classifier())
-    except ValueError as exc:
-        flash(str(exc), "warning")
-        return redirect(url_for("session.review", session_id=session_id))
-    calculate_metrics(round_obj, current_app.config)
-    db.session.commit()
+    # 반영은 AI가 내용 의견을 다시 쓰느라 수십 초 걸릴 수 있다 — 그사이 버튼을 여러 번 누르면 요청마다 '검토 중'으로 보고
+    # 다음 버전을 따로 만들었다 (2026-11-07: 2차가 3개). 한 번에 하나만 처리하고, 차례가 오면 상태를 다시 읽는다.
+    with _APPLY_LOCK:
+        db.session.expire_all()
+        session = _get_session(session_id)
+        round_obj = session.current_round
+        if round_obj.status != "pending_review":
+            flash("이미 반영해 다음 버전을 만들었습니다.", "info")
+            return _back(session_id)
+        try:
+            next_round, source = approval.apply_approved_clusters(
+                round_obj, current_app.config, classifier=_classifier())
+        except ValueError as exc:
+            flash(str(exc), "warning")
+            return redirect(url_for("session.review", session_id=session_id))
+        calculate_metrics(round_obj, current_app.config)
+        db.session.commit()
+        # AI 자동 진행(데모 포함)이면 다음 버전도 바로 기획 → 제작까지 이어서 하고 ③ 확인에서 멈춘다 (2026-11-07 사용자)
+        if session.auto_mode or orchestrator.demo_source(next_round) is not None:
+            orchestrator.start_generation(next_round, current_app.config)
+            flash(f"의견을 반영한 {next_round.round_number}차 기획을 만들고 제작을 시작했습니다. "
+                  "끝나면 ③ 확인에서 보여 드려요.", "success")
+            return _back(session_id)
     if source == "template":
         flash(f"{next_round.round_number}차 프롬프트를 만들었습니다. 영상 설명·샷 목록·내레이션은 그대로이고, "
               "반영한 의견은 시청자 반영 사항·연출 지침에 들어갔습니다. 내용을 바꾸려면 '프롬프트 편집'에서 고치세요.", "info")

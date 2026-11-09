@@ -80,6 +80,9 @@ def save_clusters(round_obj, clusters, feedbacks, config):
             rank=c["rank"],
             contradicted_by_key=c["contradicted_by_key"],
             reoccurrence_count=c["reoccurrence_count"],
+            # AI 추천: 반대 의견이 없는 묶음은 '반영'으로 미리 골라 둔다 — 사람은 빼고 싶은 것만 끄고 반영을 한 번 누른다
+            # (2026-11-08 사용자: 사람의 결정은 공개·반영 두 번). 반대 의견이 있는 묶음은 사람이 정하게 '결정 전'으로 둔다.
+            status="pending" if c["contradicted_by_key"] else "approved",
         )
         db.session.add(row)
         db.session.flush()

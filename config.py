@@ -84,7 +84,7 @@ class Config:
     COMFYUI_WORKFLOW_MOTION = os.getenv("COMFYUI_WORKFLOW_MOTION", "ltx25_motion")
     # 참조 영상으로 움직임 따라 하기 (LTX IC-LoRA Union Control, pipeline/reference_video.py)
     COMFYUI_WORKFLOW_UNION = os.getenv("COMFYUI_WORKFLOW_UNION", "ltx25_union")
-    # 얼굴 사진으로 인물 그리기 (Qwen-Image-Edit-2511 Lightning 4단계). 모델이 없으면 inswapper 합성으로 대신한다
+    # 얼굴 사진으로 인물 그리기 (Qwen-Image-Edit-2511 Lightning 4단계). REF_PHOTO_MODE=draw일 때만, 모델이 없으면 사진 없이 그린다
     COMFYUI_WORKFLOW_FACE = os.getenv("COMFYUI_WORKFLOW_FACE", "qwen_face_t2i")
     # Qwen 첫 프레임 색 보정 (pipeline/tone.py): 색이 진해 채도·대비를 낮춘다. 1.0이면 보정 안 함 (2026-11-05 사용자가 고른 값)
     QWEN_TONE_COLOR = float(os.getenv("QWEN_TONE_COLOR", "0.85"))
@@ -114,11 +114,6 @@ class Config:
     # 자동 움직임 경로 (auto_motion.py) — 차 이동·집어 올리기처럼 방향·접촉이 필요한 장면에 26B가 찾은 위치로 Motion Control 경로를 붙인다.
     # 26B 비전(REFINE_LLAMA_MMPROJ)과 ComfyUI-LTXVideo·움직임 LoRA가 있을 때만 동작, 없으면 그냥 I2V
     AUTO_MOTION = _bool("AUTO_MOTION", True)
-    # 본인 얼굴 합성 (pipeline/face.py) — insightface inswapper(비상업 연구용 라이선스)를 따로 만든 가상환경에서 돌린다.
-    # 둘 다 비우면 얼굴 사진 기능이 꺼진다. 예: D:\capstone\tools\faceswap\venv\Scripts\python.exe / ...\faceswap\swap.py
-    FACESWAP_PYTHON = os.getenv("FACESWAP_PYTHON", "")
-    FACESWAP_SCRIPT = os.getenv("FACESWAP_SCRIPT", "")
-    FACESWAP_TIMEOUT_SEC = int(os.getenv("FACESWAP_TIMEOUT_SEC", "180"))
     COMFYUI_POLL_INTERVAL_SEC = float(os.getenv("COMFYUI_POLL_INTERVAL_SEC", "2"))
     COMFYUI_SHOT_TIMEOUT_SEC = int(os.getenv("COMFYUI_SHOT_TIMEOUT_SEC", "900"))
     COMFYUI_SIZE_MULTIPLE = int(os.getenv("COMFYUI_SIZE_MULTIPLE", "64"))
@@ -177,6 +172,10 @@ class Config:
     TTS2_TIMEOUT_SEC = int(os.getenv("TTS2_TIMEOUT_SEC", "300"))
     EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "ko-KR-SunHiNeural")  # SunHi(여) / InJoon(남) / HyunsuMultilingual(남)
     SUPERTONIC_VOICE = os.getenv("SUPERTONIC_VOICE", "F1")  # F1~F5 / M1~M5
+    # 맡기기 화면의 참고 사진(인물·물건·장소): reference = 26B가 사진마다 생김새를 읽어 장면 묘사에 글로 넣고 Z-Image로 그림
+    # (Qwen 안 씀), draw = 예전 방식(Qwen-Image-Edit가 사진대로 첫 프레임을 그림).
+    # 2026-11-07 사용자: 원본·데모 모두 Qwen을 쓰지 않는다 → reference
+    REF_PHOTO_MODE = os.getenv("REF_PHOTO_MODE", "reference")
     VOICE_CULTURE = os.getenv("VOICE_CULTURE", "ko-KR")    # 이 언어의 설치된 음성을 고른다
     VOICE_NAME = os.getenv("VOICE_NAME", "")               # 비우면 VOICE_CULTURE의 첫 음성
     VOICE_RATE = int(os.getenv("VOICE_RATE", "0"))         # -10(느림) ~ 10(빠름)
@@ -226,6 +225,7 @@ class Config:
 
     # 개발용 파이프라인 점검 페이지 (/dev/pipeline-test) — 로컬 전용, 배포 시 false
     DEV_TEST_PAGE = _bool("DEV_TEST_PAGE", True)
+    DEMO_MODE = _bool("DEMO_MODE", False)  # 시연 촬영용 데모 앱 — run_demo.py가 켠다 (따로 된 작업 폴더 instance_demo, 포트 5001)
 
     # 화면에 보이는 서비스 이름
     SERVICE_NAME = os.getenv("SERVICE_NAME", "AI 영상 피드백 자동 개선 시스템")

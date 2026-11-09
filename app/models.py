@@ -52,7 +52,7 @@ class PipelineSession(db.Model):
     auto_mode = db.Column(db.Boolean, default=False)
     # AI에게 맡기기 화면의 입력 {"idea", "answers", "assumptions"} — 기획 단계 작업이 읽는다
     intake_json = db.Column(db.Text, default="")
-    face_path = db.Column(db.String(500), default="")  # 본인 얼굴 사진 — 사람이 나오는 장면 첫 프레임을 그 사람으로 (Qwen)
+    face_path = db.Column(db.String(500), default="")  # 인물 참고 사진 — 생김새를 읽어 사람 장면 묘사에 (draw 모드면 Qwen으로 그림)
     # 물건·장소 참조 사진 (pipeline/ref_photos.py) [{"path", "name", "kind", "en"}] — 장면에 그 이름이 나오면 함께 참조
     refs_json = db.Column(db.Text, default="")
     # 장면 사진 (pipeline/photo_scenes.py) [{"path", "caption"}] — 순서대로 장면 하나씩, 사진 자체가 첫 프레임 (사진 → 영상)

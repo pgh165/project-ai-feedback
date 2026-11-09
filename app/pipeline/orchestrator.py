@@ -48,9 +48,10 @@ TRANSITIONS = {
     "video_ready": {"generating", "uploaded"},   # generating: 장면 다시 만들기·올릴 영상 다시 만들기
     "uploaded": {"feedback_collected", "video_ready"},  # video_ready: 공개 취소 — 댓글을 모으기 전에만 (unpublish)
     "feedback_collected": {"feedback_collected", "feedback_classified"},
-    "feedback_classified": {"feedback_classified", "clustering"},
+    # feedback_collected: 분류·묶은 뒤에도 댓글을 더 넣을 수 있다 — 넣으면 처음부터 다시 분류·묶기 (process_feedback)
+    "feedback_classified": {"feedback_classified", "clustering", "feedback_collected"},
     "clustering": {"pending_review", "feedback_classified"},  # 실패하면 분류 단계로 복귀
-    "pending_review": {"pending_review", "clustering", "prompt_updated"},
+    "pending_review": {"pending_review", "clustering", "prompt_updated", "feedback_collected"},
     "prompt_updated": set(),
 }
 
@@ -740,11 +741,13 @@ def _end_stage(round_obj, round_id, failures, stopped, ok_state, hold):
     _finish_stage(round_obj, round_id, failures, stopped, ok_state)
 
 
-def _ref_draw(adapter, round_obj, shot):
-    """이 장면 첫 프레임을 참조 사진으로 그릴지 — [{"path","label","kind"}] (얼굴: 사람 장면, 물건·장소: 묘사에 영어 이름).
-    넣을 사진이 없거나 Qwen-Image-Edit을 쓸 수 없으면 None (얼굴은 그 뒤 inswapper 합성으로)."""
+def _ref_draw(adapter, round_obj, shot, config):
+    """[draw 모드] 이 장면 첫 프레임을 참고 사진으로 그릴지 — [{"path","label","kind"}] (인물: 사람 장면, 물건·장소: 묘사에 영어 이름).
+    참고 사진 모드(기본)이거나 넣을 사진이 없거나 Qwen-Image-Edit을 쓸 수 없으면 None (그때는 사진 없이 그린다)."""
     from . import face, ref_photos
 
+    if ref_photos.reference_mode(config):  # 참고 사진 모드: 사진으로 그리지 않는다 — 생김새는 장면 묘사에 글로 들어가 있다
+        return None
     session = round_obj.session
     prompt = shot.get("prompt_fixed") or shot["prompt"]
     picked = ref_photos.pick(prompt, ref_photos.load(session), session.face_path or None, face.wanted(prompt),
@@ -761,21 +764,6 @@ def _ref_draw(adapter, round_obj, shot):
 def _ref_note(picked):
     names = ["얼굴 사진" if p["label"] == "person" else p["label"] for p in picked]
     return "참조 사진으로 그렸어요: " + ", ".join(names)
-
-
-def _apply_face(config, round_obj, shot, image_path):
-    """본인 얼굴 사진이 있는 프로젝트면 사람이 나오는 장면의 첫 프레임에 얼굴을 합성한다. 화면에 남길 말(없으면 '')."""
-    from . import face
-
-    face_path = round_obj.session.face_path
-    if not face_path or not image_path or not face.wanted(shot.get("prompt_fixed") or shot["prompt"]):
-        return ""
-    try:
-        _ok, message = face.apply(config, face_path, image_path)
-    except Exception as exc:  # 합성 실패가 장면 생성을 멈추면 안 된다 — 합성 없이 이어 간다
-        log.warning("얼굴 합성 실패 (%s): %s", shot["id"], exc)
-        return f"얼굴 합성 실패: {exc}"
-    return message
 
 
 def _fail_render(render_id, exc):
@@ -881,7 +869,7 @@ def run_staged(app, round_id, payload):
                 _select(render)
                 db.session.commit()
                 continue
-            draw_refs = _ref_draw(adapter, round_obj, shot)  # 얼굴·물건 사진을 보고 그릴지 (Qwen-Image-Edit)
+            draw_refs = _ref_draw(adapter, round_obj, shot, cfg)  # 얼굴·물건 사진을 보고 그릴지 (Qwen-Image-Edit)
             try:
                 result = adapter.generate_image(
                     storyboard, {**shot, "image": None, **({"refs": draw_refs} if draw_refs else {})}
@@ -899,10 +887,8 @@ def run_staged(app, round_id, payload):
             render.image_path = result.image_path
             render.provider, render.elapsed_sec = result.provider, result.elapsed_sec
             render.peak_vram_mb = result.peak_vram_mb
-            face_note = (_ref_note(draw_refs) if draw_refs
-                         else _apply_face(cfg, round_obj, shot, result.image_path))  # Qwen을 못 쓰면 inswapper 합성
-            if face_note:
-                render.review_json = json.dumps({"face": face_note}, ensure_ascii=False)
+            if draw_refs:
+                render.review_json = json.dumps({"face": _ref_note(draw_refs)}, ensure_ascii=False)
             _select(render)
             db.session.commit()
         try:
@@ -1594,7 +1580,14 @@ def replay_demo(round_obj, source, config):
                 round_id=round_obj.id, shot_id=r.shot_id, version=1, status="done", generator=r.generator,
                 provider=r.provider, workflow=r.workflow, prompt=r.prompt, enhanced_prompt=r.enhanced_prompt,
                 seed=r.seed, width=r.width, height=r.height, frames=r.frames, fps=r.fps, duration=r.duration,
-                path=r.path, image_path=r.image_path, elapsed_sec=r.elapsed_sec, selected=True))
+                path=r.path, image_path=r.image_path, elapsed_sec=r.elapsed_sec, selected=True,
+                review_json=r.review_json or ""))  # AI 점검 결과도 — 자동 진행 데모에서 ③ 'AI 점검 결과'에 보이게
+    source_auto = source.auto_data
+    if source_auto.get("phase"):  # 소스에 남은 실제 점검 기록(미달 장면·진행 기록)을 이어 붙인다 — 맡긴 내용·가정은 그대로
+        data = round_obj.auto_data
+        data.update(phase="done", flagged=source_auto.get("flagged") or [])
+        data["log"] = ((data.get("log") or []) + (source_auto.get("log") or []))[-60:]
+        round_obj.auto_json = json.dumps(data, ensure_ascii=False)
     out = output_dir(current_app, round_obj)
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source.video_path, out / "rough_cut.mp4")  # 이 버전 폴더로 — 여기서 다시 만들어도 원본은 그대로
@@ -1821,12 +1814,16 @@ def run_youtube_upload(app, round_id, payload):
 
 
 def collect(round_obj, config):
+    """댓글을 모은다. 반환: 새로 들어온 댓글 수.
+    새 댓글이 없으면 상태를 바꾸지 않는다 — 묶음·검토 결정을 지우지 않고, 아직 댓글이 없는 공개 직후라면
+    '공개 취소'도 그대로 할 수 있게 (화면이 1분마다 자동으로 모으므로 빈 수집이 잦다)."""
     comments = youtube_client.collect_comments(
         round_obj.youtube_video_id, config, seed=round_obj.id)
     existing = {f.comment_text for f in round_obj.feedbacks}
     added = [c for c in comments if c["text"].strip() and c["text"].strip() not in existing]
-    add_comments(round_obj, added)
-    return len(comments)
+    if added:
+        add_comments(round_obj, added)
+    return len(added)
 
 
 def add_comments(round_obj, comments):
@@ -1879,6 +1876,17 @@ def start_clustering(round_obj):
     round_obj.generation_error = ""
     db.session.commit()
     return jobs.enqueue("cluster", round_obj.id, {})
+
+
+def process_feedback(round_obj, classifier):
+    """댓글을 넣은 뒤 분류 → 비슷한 의견 묶기까지 한 번에 (2026-11-08 사용자: 관리자는 '댓글 모으기'만 누르고
+    다음으로 하는 일은 묶음 승인). 반환 (건설적 의견 수, 묶기를 시작했는지).
+    건설적 의견이 없으면 분류 단계에 멈춘다 — 댓글이 더 들어오면 다시 부른다."""
+    constructive = classify(round_obj, classifier)
+    if not constructive:
+        return 0, False
+    start_clustering(round_obj)
+    return constructive, True
 
 
 def run_clustering_job(app, round_id):

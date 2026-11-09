@@ -74,7 +74,7 @@ YouTube 시청자 댓글에서 건설적 피드백을 골라 묶어, 제작자�
 - I2V는 회로(LED 점등·푸시인)·로봇팔(집어 올리기/옮기기)에는 잘 된다.
 - 해상도는 64 배수(`size_multiple`), 프레임은 8n+1. 1280x704·121프레임 ≈ 160초/컷, 1920x1088 4~5초 ≈ 220~270초, VRAM ≈ 15.6GB.
 - 얼굴 I2V: 표정이 커질수록 얼굴이 달라진다. "smile"은 과장되므로 "거의 무표정, 입꼬리만 아주 조금" + 짧게.
-  inswapper(`D:\capstone\tools\faceswap`, 128px) 프레임별 합성은 흐려지고 안경테·앞머리를 망쳐 쓰지 않는다. 첫 프레임에만 한 번 합성 후 I2V가 낫다. inswapper는 비상업 연구용 라이선스.
+  inswapper 얼굴 합성은 흐려지고 안경테·앞머리를 망치며 비상업 라이선스라 **앱에서 뺐다**(2026-11-09, 코드는 `_archive/unused_code/face_inswapper.py`).
 - Motion Control IC-LoRA: 경로대로 움직이지만 대상 모양이 변하거나 늘어날 수 있다. 2D 계산이라 옆에서 본 팔에만 맞는다. 집어 올리기는 시드에 따라 물체가 안 따라와서 `takes` 여러 개를 뽑는다.
 
 ## 5. 핵심 설계 (코드 고칠 때 지켜야 할 것)
@@ -85,18 +85,22 @@ YouTube 시청자 댓글에서 건설적 피드백을 골라 묶어, 제작자�
   제작 원칙 질문(`rule_questions`, 최대 2개, `key=rN`·`rule: true`)도 26B가 설명을 보고 만든다(두 질문에 서버 한 번). 폼 `rule_question_N`/`rule_answer_N` → `plan_rules.from_answers`
   → `intake_json["rules"]` → `plan_rules.for_session` → `draft_fill.fill`·`scene_refine.refine`의 `form["rules"]`. 답하지 않으면 원칙 없음. 전역 원칙 파일·화면은 없다.
 - 배경음악 파일: 맡기기 화면 `music_file`(또는 ③ 꾸미기 `music_upload`) → `music_json["uploaded"]`. 올린 곡이 있으면 `bgm.ensure_track`이 만들지 않고 처음부터 쓰고(offset 0),
-  MiniMax 표기(`bgm.is_generated`)를 붙이지 않으며, '다른 곡' 의견으로 바꾸지 않는다. 없을 때만 MiniMax로 만든다.
+  AI 생성 곡 표기(`bgm.is_generated`·`bgm.credit`)를 붙이지 않으며, '다른 곡' 의견으로 바꾸지 않는다. 없을 때만 AI가 만든다(`MUSIC_ENGINE`, 기본 Stable Audio).
 - `auto_pipeline.run_auto_plan`: `draft_fill.fill` → `scene_refine.refine` → `build_initial_prompt` → `ko_en` (전부 `in_job=True`로 큰 모델 사용 가능). 실패하면 ① 기획에 남기고 `auto_json.phase=plan_failed` + 'AI에게 다시 맡기기'.
 - `auto_pipeline.run_auto`: `run_staged(..., hold=True)`로 images_ready·clips_ready에서 **멈추지 않고** 이미지 → `auto_review` 점검 → 미달만 `_reroll_shot`(fix 문장을 장면 의견으로) → 컷 → 점검 → `_pick_best` → `finalize_generation`. 재시도 최대 `AUTO_REVIEW_MAX_RETRIES`(2). 끝까지 미달이면 가장 나은 버전 + `auto_json.flagged`.
 - `auto_review.py`: 이미지 = 26B 비전(projector 있으면, 점검 한 번에 서버 한 번) → 못 쓰면 e2b (SCORE/TEXT/BROKEN/FIX), 컷 = ffmpeg 프레임 차이(멈춤)·밝기(어두움)·**첫·끝 프레임 줌 배율**(가장자리 띠, 장면 줄이 카메라 움직임을 원하지 않을 때) + **뒤쪽 75%·끝 95% 두 장을 묘사 일치 점수로**. '형태 깨짐'은 PROBLEM 문장에 실제 변형 단어가 있을 때만(26B는 묘사 차이도 BROKEN이라 답한다). **AI가 답하지 못하면 통과(점검 못 함)로 두고 다시 만들지 않는다.** 결과는 `ShotRender.review_json`.
 - 멈춘 컷(kind=still)·줌은 의견 없이 시드만 바꾸고, 생김새 문제(look)는 fix 문장을 의견으로 넘긴다. **컷이 '묘사와 달라요'면 첫 프레임부터 다시 그린다**(`_redraw_first_frames`) — 첫 프레임에 없는 것은 컷에서 생기지 않는다.
   26B 점검은 temperature 0, 점수가 기준 ±1이면 한 번 더 물어 평균(`ask_scored`).
-- 참조 사진(얼굴 `face_path` + 물건·장소 `refs_json`, `ref_photos.py`): 장면마다 `ref_photos.pick`이 최대 3장을 고른다 — 사람 장면(`face.wanted`)이면 얼굴이 이미지 1,
-  묘사에 사진의 **영어 이름(en)**이 그대로 나오면 그 사진. 고른 사진이 있으면 첫 프레임을 **Qwen-Image-Edit-2511**로 그린다
+- **참고 사진 (인물·물건·장소, 한 칸, 2026-11-07 사용자: 원본·데모 모두 Qwen을 쓰지 않는다)** — 맡기기 화면 `ref_file`·`ref_name`·`ref_kind`(person/object/place, 최대 6장)
+  → `PipelineSession.refs_json`. 예전 단일 `face` 필드(`face_path`)도 받기는 한다(인물 1명으로 취급).
+  기본 `REF_PHOTO_MODE=reference`: 자동 기획 때 26B 비전을 한 번 켜서 사진마다 생김새를 영어로 읽고(`face.describe`·`ref_photos.describe`, 못 쓰면 e2b, `ref["desc"]`),
+  기획 뒤 `auto_pipeline._refs_into_shots`가 장면 줄마다 `ref_photos.pick`(사람 장면 → 인물 사진 중 시드로 무작위, 두 사람이면 서로 다른 두 명 /
+  묘사에 영어 이름(en)이 나오면 그 물건·장소, 물건은 장면당 하나, 최대 3장)으로 고른 사진의 생김새를 `ref_photos.describe_line`으로 붙인다
+  ('; the main person is …' / '; the Raspberry Pi 5 is …' / '; the place is …'). 첫 프레임은 Z-Image가 그린다 — `_ref_draw`는 아무것도 안 한다.
+  51번처럼 장면 줄마다 생김새를 적어야 장면이 바뀌어도 같은 사람·물건으로 그려진다. 영어 이름은 자동 기획 때 정하고 `scene_refine`에 "그대로 쓰라"(`refine_note`).
+- `REF_PHOTO_MODE=draw`(예전 방식, 기본 아님): 고른 사진으로 첫 프레임을 **Qwen-Image-Edit-2511**로 그린다
   (`orchestrator._ref_draw` → `params["refs"]` → `ComfyUIAdapter._first_frame`, 워크플로 `qwen_face_t2i` + 이미지 2·3 노드는 코드가 붙임, 프롬프트 끝에 `ref_photos.instruction`).
-  Qwen 그림은 색이 진해 받은 뒤 `tone.soften`(채도 85%·대비 90%, `QWEN_TONE_*`)으로 낮춘다(2026-11-05 사용자 선택).
-  영어 이름은 자동 기획 때 번역해 정하고 `scene_refine`에 "이 이름을 그대로 쓰라"(`refine_note`)고 넘긴다 — 이름이 묘사에 안 나오면 사진이 안 들어간다.
-  Qwen을 못 쓰면(`face_problem`) 예전처럼 `face.py`가 inswapper로 첫 프레임에 합성한다(원본 `_orig.png`, 같은 성별 얼굴 선택). 어느 쪽이 실패해도 장면은 진행.
+  Qwen 그림은 색이 진해 `tone.soften`(채도 85%·대비 90%, `QWEN_TONE_*`)으로 낮춘다. Qwen을 못 쓰면(`face_problem`) 사진 없이 그린다.
 - 장면 사진(사진 → 영상, `photo_scenes.py`, `PipelineSession.photos_json`): 사진 하나 = 장면 하나(올린 순서), **사진 자체가 첫 프레임**.
   `ensure_storyboard`가 `photo_scenes.attach`로 `shot["image"]`·`shot["photo"]`를 붙이고 `run_staged`가 그대로 복사(provider `photo`).
   장면 묘사는 Gemma가 사진을 보고(사용자가 적은 동작 반영) 쓰며 장면 다듬기는 건너뛴다. 자동 진행의 첫 프레임 점검·다시 그리기도 건너뛴다.
@@ -139,6 +143,12 @@ YouTube 시청자 댓글에서 건설적 피드백을 골라 묶어, 제작자�
 → ⑦ clustering → ⑧ pending_review → ⑨ prompt_updated → 다음 버전 ①
 ```
 - 같은 단계 반복(댓글 추가·재분류·재군집화)은 자기 전이로 허용. 허용 안 된 전이는 `InvalidTransition`.
+- **사람의 결정은 공개·반영 두 번**(2026-11-08 사용자, 발표 자료와 같게): 공개 뒤 화면이 1분마다 `POST /api/rounds/<id>/auto-collect`로
+  댓글을 모으고(묶음이 생기기 전 단계에서만), 댓글을 넣으면 분류 → 묶기까지 자동(`orchestrator.process_feedback`), 묶음은 **반대 의견이 없으면 '반영'으로
+  미리 골라 둔다**(`approval.save_clusters`, 반대 의견 있는 묶음만 '결정 전'). 사람은 검토 화면에서 빼고 싶은 것만 끄고 '반영하고 다음 버전 만들기' 한 번.
+  `collect`는 새 댓글이 없으면 상태를 바꾸지 않는다(공개 직후 빈 수집에도 '공개 취소'가 그대로 됨). '지금 모으기'·'의견 추가'·'장면 의견 추가'도 같은 흐름.
+  분류·묶은 뒤(feedback_classified·pending_review)에도 댓글을 더 넣을 수 있고(→ feedback_collected 전이), 넣으면 처음부터 다시 묶어 검토 결정이 초기화된다.
+  새 댓글 없이 다시 모으면 아무것도 바꾸지 않는다. '판정 바꾸기'도 pending_review에서 가능하고 바꾸면 다시 묶는다. `/filter`·`/cluster` 라우트와 `/api/rounds/<id>/advance`는 단계별로 남아 있다.
 - 단계별 확인(`COMFYUI_STAGED_REVIEW=true`): 이미지 확인 → 컷 확인 → **사람이 '러프컷 만들기'를 눌러야** 합성. 러프컷은 자동으로 만들지 않는다.
   다시 뽑으면 시드 +101, 새 `ShotRender` 버전이 쌓인다(이전 이미지 `discarded`, 이전 컷은 고를 수 있음).
 - 화면 단계: ② 제작 = 장면별(이미지 → 컷), ③ 확인 = 러프컷. 서버 상태는 `generating`이어도 러프컷 작업(`payload.stage == "rough"`)이면 ③에 표시(`compute_steps`). 단계 계산은 `routes/session._stage_of`.
@@ -203,7 +213,14 @@ YouTube 시청자 댓글에서 건설적 피드백을 골라 묶어, 제작자�
 
 `PipelineSession.demo_json = {"rounds": {"1": {"replay_round_id": id, "youtube_video_id": "..."}, ...}}`이면 '제작 시작'이 장면을 만들지 않고
 `orchestrator.replay_demo`로 준비된 결과를 복사해 ③으로 가고, 업로드는 그 영상 ID에 연결한다. 화면에서 켜는 곳은 없다.
-데모 프로젝트는 27번. **리허설 뒤 되돌리기: `.\venv\Scripts\python demo_reset.py`**.
+**데모 앱은 실제 앱과 분리** (2026-11-06): `run_demo.py`가 `DEMO_MODE=true` + 작업 폴더 `instance_demo`(DB·영상·토큰·분류기 따로)로 5001번에 띄운다.
+`demo_setup.py`가 실제 DB에서 데모에 필요한 프로젝트만 복사(영상도 복사, 경로 바꿈), `demo_reset.py`(기본 `team`)가 데모 프로젝트를 ① 기획으로 되돌리고
+분류기 파일을 기준 상태(`*.npz.base`)로 되돌린다 — 분류기는 승인 때 학습(`approval.update_prototype`)해서 안 되돌리면 다음 촬영의 묶음이 달라졌다. `old` = 실제 앱의 27번.
+team: 1차 = '[데모 소스] … 수정 전'(51번 수정 전 컷), 2차 = 51번(데모 DB에서 '[데모 소스]' 제목, 데모 화면 목록·숫자에서 숨김).
+**대화형 시작 연출 `/demo`** (`app/routes/demo.py`, 데모 앱에서만): 데모 앱의 `/`·`/session/new`는 데모 페이지로 이어진다. 첫 화면·질문 화면 템플릿 복사본(`templates/demo/`)에서
+설명(F2 자동 입력)·준비된 질문에 답하면 데모 프로젝트에 맡긴 내용을 적고 `auto_plan` 작업 행(running, 큐가 집지 않음)을 만들어 실제 프로젝트 화면이
+'AI 기획 중'을 보이게 한 뒤, 스레드가 단계 문구를 흘리고 `start_generation`(데모 재생)을 부른다. 시작할 때 분류기 캐시를 비워 기준 파일을 다시 읽는다.
+촬영 안내는 `D:\capstone\demo_kit\촬영_순서.md`.
 
 ## 8. 주요 파일 위치
 
@@ -212,8 +229,8 @@ app/models.py                      DB 모델
 app/routes/session.py              화면·API 전부 / devtest.py 점검 페이지(/dev/pipeline-test)
 app/pipeline/orchestrator.py       상태 머신(advance)·생성 흐름·부분 재생성·기획 변경·데모 재생
 app/pipeline/auto_pipeline.py      AI 자동 진행 (기획 → 생성·점검·다시 만들기 → 러프컷)
-app/pipeline/auto_review.py · intake.py · face.py   AI 점검 / 부족한 것만 묻기 / 얼굴 합성
-tests/auto_checks.py               AI 자동 진행 검증 (가짜 LLM·비전·얼굴 합성)
+app/pipeline/auto_review.py · intake.py · face.py · ref_photos.py   AI 점검 / 부족한 것만 묻기 / 참고 사진(생김새 읽기·장면 줄에 넣기)
+tests/auto_checks.py               AI 자동 진행 검증 (가짜 LLM·비전·참고 사진, draw 모드의 Qwen 그리기)
 app/pipeline/jobs.py               GPU 작업 큐 (워커 1개)
 app/pipeline/feedback_target.py    반영 위치·길이 요청·장면 묘사 고쳐 쓰기
 app/pipeline/edit_plan.py          편집 설정 + 의견 → 편집 제안

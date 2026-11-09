@@ -20,23 +20,46 @@ def check(label, condition, detail=""):
         _failures.append(label)
 
 
-def run_round(client, app, sid, approve_top=4):
-    """현재 화를 prompt_built → prompt_updated까지 진행."""
+def run_round(client, app, sid, approve_top=4, expect_next="prompt_built"):
+    """현재 화를 prompt_built → prompt_updated까지 진행. 자동 진행·데모 프로젝트는 반영하면 다음 버전 제작까지 이어져
+    expect_next="video_ready"."""
     base = f"/session/{sid}"
-    for step, expected in [("generate", "video_ready"), ("upload", "uploaded"),
-                           ("collect", "feedback_collected"), ("filter", "feedback_classified")]:
+    for step, expected in [("generate", "video_ready"), ("upload", "uploaded")]:
         res = client.post(f"{base}/{step}")
         status = client.get(f"{base}/api/status").get_json()["status"]
         check(f"POST {step} → {expected}", res.status_code == 302 and status == expected, status)
 
-    res = client.post(f"{base}/comments", data={"comments": "manual comment"})
-    check("POST comments는 분류 이후 단계에서 거부", client.get(f"{base}/api/status").get_json()["status"]
-          == "feedback_classified")
-
-    res = client.post(f"{base}/cluster")
+    # 공개 뒤 화면이 부르는 자동 수집 — 누르지 않아도 분류 → 묶기까지 하고 검토 화면 주소를 돌려준다 (2026-11-08)
+    with app.app_context():
+        rid = db.session.get(PipelineSession, sid).current_round.id
+    auto = client.post(f"/api/rounds/{rid}/auto-collect").get_json()
     data = client.get(f"{base}/api/clusters").get_json()
-    check("POST cluster → pending_review", data["status"] == "pending_review", f"{len(data['clusters'])}개 클러스터")
-    check("클러스터 생성됨", len(data["clusters"]) > 0)
+    check("자동 수집 → 분류·묶기까지 → pending_review + 검토 화면 주소",
+          auto["state"] == "pending_review" and "/review" in auto.get("review_url", "") and len(data["clusters"]) > 0,
+          (auto, len(data["clusters"])))
+    again = client.post(f"/api/rounds/{rid}/auto-collect").get_json()
+    check("묶은 뒤에는 자동 수집이 돌지 않음 (결정을 지우지 않게)", again["state"] == "pending_review" and again["added"] == 0, again)
+    res = client.post(f"{base}/collect")
+    check("POST collect (새 댓글 없음) → 검토 단계 유지", client.get(f"{base}/api/status").get_json()["status"] == "pending_review")
+    check("AI 추천: 반대 의견이 없는 묶음은 '반영'으로 미리 골라 둠 (사람은 반영 한 번)",
+          all(c["status"] == ("pending" if c["contradicted_by_key"] else "approved") for c in data["clusters"]),
+          [(c["status"], bool(c["contradicted_by_key"])) for c in data["clusters"]][:5])
+    first = data["clusters"][0]["id"]
+    client.post(f"{base}/cluster/{first}/decision", data={"decision": "reject"})
+    client.post(f"{base}/collect")  # 같은 시뮬레이션 댓글 — 새 댓글이 없으면 묶음·결정을 지우지 않는다
+    data = client.get(f"{base}/api/clusters").get_json()
+    check("새 댓글 없이 다시 모으기 → 검토 결정 유지",
+          data["status"] == "pending_review" and any(c["id"] == first and c["status"] == "rejected" for c in data["clusters"]),
+          [(c["id"], c["status"]) for c in data["clusters"]][:3])
+    with app.app_context():
+        n_before = len(db.session.get(PipelineSession, sid).current_round.feedbacks)
+    res = client.post(f"{base}/comments", data={"comments": "1분 10초쯤 배경음악이 너무 커서 내레이션이 안 들려요"})
+    data = client.get(f"{base}/api/clusters").get_json()
+    with app.app_context():
+        n_after = len(db.session.get(PipelineSession, sid).current_round.feedbacks)
+    check("묶은 뒤 의견 추가 → 다시 분류·묶기 (결정은 새로)",
+          n_after == n_before + 1 and data["status"] == "pending_review" and len(data["clusters"]) > 0
+          and not any(c["status"] == "rejected" for c in data["clusters"]), (n_before, n_after, data["status"]))
     check("GET review", client.get(f"{base}/review").status_code == 200)
 
     for c in data["clusters"][:approve_top]:
@@ -49,7 +72,13 @@ def run_round(client, app, sid, approve_top=4):
 
     res = client.post(f"{base}/apply")
     status = client.get(f"{base}/api/status").get_json()["status"]
-    check("POST apply → 다음 버전 prompt_built", res.status_code == 302 and status == "prompt_built", status)
+    check(f"POST apply → 다음 버전 {expect_next}", res.status_code == 302 and status == expect_next, status)
+    with app.app_context():
+        rounds_before = len(db.session.get(PipelineSession, sid).rounds)
+    client.post(f"{base}/apply")  # 반영을 한 번 더 눌러도 (2026-11-07: 여러 번 눌러 2차가 3개) 다음 버전을 또 만들지 않음
+    with app.app_context():
+        rounds_after = len(db.session.get(PipelineSession, sid).rounds)
+    check("반영을 두 번 눌러도 다음 버전은 하나", rounds_after == rounds_before, (rounds_before, rounds_after))
     return data["clusters"]
 
 
@@ -496,6 +525,40 @@ def _end_card_logo_checks(client, app, sid, base):
     check("엔딩 카드에 로고를 넣기로 했으면 로고를 올려도 영상 위(모서리)에는 켜지 않고 카드에만 넣음 (안내 문구)",
           logo["file"] == "logo.png" and not logo["enabled"] and card["enabled"] and card["logo"]
           and "엔딩 카드에 맞춰" in res.get_data(as_text=True), (logo, card))
+
+    # 타임라인 로고 막대 (2026-11-07 사용자): 엔딩 카드에만 로고여도 막대가 보이고(카드 구간),
+    # 앞 장면으로 늘리면 그 구간 영상 위 로고가 켜지고, 카드 안으로 줄이면 꺼진다. 미리보기 바탕은 엔딩 카드 화면
+    import json as _json
+    with app.app_context():
+        rnd = db.session.get(PipelineSession, sid).current_round
+        saved_tl = rnd.timeline_json
+        rnd.timeline_json = _json.dumps({"total": 20.0, "scenes": [{"id": "s01", "start": 0.0, "end": 14.0}],
+                                         "end_card": [14.0, 20.0], "cues": [], "logo": None, "last_start": 10.0})
+        db.session.commit()
+    from app.routes import session as routes
+
+    def bar():
+        with app.test_request_context():
+            sess = db.session.get(PipelineSession, sid)
+            return routes._timeline_view(sess.current_round, overlay.load_logo(sess), True)["logo"]
+    page = client.get(base).get_data(as_text=True)
+    card_bar = bar()
+    client.post(f"{base}/decorate", data={"timeline_settings": "1", "logo_start": "6", "logo_end": "20"})
+    with app.app_context():
+        into_scenes = overlay.load_logo(db.session.get(PipelineSession, sid))
+    scene_bar = bar()
+    client.post(f"{base}/decorate", data={"timeline_settings": "1", "logo_start": "15", "logo_end": "20"})
+    with app.app_context():
+        card_only = overlay.load_logo(db.session.get(PipelineSession, sid))
+        rnd = db.session.get(PipelineSession, sid).current_round
+        rnd.timeline_json = saved_tl
+        db.session.commit()
+    check("타임라인 로고 막대: 엔딩 카드에만 로고여도 카드 구간 막대 → 앞 장면까지 늘리면 그 구간 영상 위 로고 켜짐(장면 끝까지=0) "
+          "→ 카드 안으로 줄이면 꺼짐, 꾸미기에 '보이는 때' 선택 칸 없음",
+          card_bar == [14.0, 20.0] and 'id="logo-show"' not in page
+          and into_scenes["enabled"] and into_scenes["show"] == "range" and into_scenes["start_sec"] == 6.0
+          and into_scenes["end_sec"] == 0.0 and scene_bar == [6.0, 20.0] and not card_only["enabled"],
+          (card_bar, scene_bar, into_scenes["enabled"], card_only["enabled"]))
     client.post(f"{base}/decorate", data={"end_card_settings": "1"})  # 엔딩 카드 끄기 (뒤 검증에 영향 없게)
 
 
@@ -702,7 +765,11 @@ def _demo_replay_checks(client, app):
         src.video_path, src.status = video, "video_ready"
         for n, sid in enumerate(("s01", "s02")):
             db.session.add(ShotRender(round_id=src.id, shot_id=sid, version=3, status="done", selected=True,
-                                      path=os.path.join(folder, f"{sid}.mp4"), duration=3.0 + n, provider="comfyui"))
+                                      path=os.path.join(folder, f"{sid}.mp4"), duration=3.0 + n, provider="comfyui",
+                                      review_json=_json.dumps({"image": {"checked": True, "passed": True, "score": 9.0,
+                                                                         "problems": []}})))
+        src.auto_json = _json.dumps({"phase": "done", "flagged": ["s02"],
+                                     "log": [{"at": "00:00:00", "text": "준비된 점검 기록"}]}, ensure_ascii=False)
         db.session.commit()
         src_id = src.id
 
@@ -710,21 +777,26 @@ def _demo_replay_checks(client, app):
     with app.app_context():
         db.session.get(PipelineSession, demo_sid).demo_json = _json.dumps({"replay_round_id": src_id})
         db.session.commit()
-    run_round(client, app, demo_sid)  # 1차: 평소처럼 (데모 재생은 2차부터)
-    client.post(f"/session/{demo_sid}/generate")
+    run_round(client, app, demo_sid, expect_next="video_ready")  # 1차: 평소처럼 — 반영하면 2차는 데모 재생으로 바로 ③
+    client.post(f"/session/{demo_sid}/generate")  # 이미 ③이라 아무 일도 하지 않는다
     with app.app_context():
         rnd = db.session.get(PipelineSession, demo_sid).current_round
         renders = {r.shot_id: (r.status, r.selected, r.duration) for r in rnd.shot_renders}
         state, number, path, text = rnd.status, rnd.round_number, rnd.video_path, rnd.prompt_text
         jobs_made = len(GenerationJobModel.query.filter_by(round_id=rnd.id).all())
         notes = [v.note for v in db.session.get(PipelineSession, demo_sid).versions]
-    check("데모 재생: 2차 '제작 시작' → 만들지 않고 준비된 결과로 ③ (장면·영상·자막 복사, 진행 표시용 작업 1건)",
+        reviews = {r.shot_id: r.review.get("image", {}).get("score") for r in rnd.shot_renders}
+        auto = rnd.auto_data
+    check("데모 재생: 반영하면 2차 제작을 바로 시작 → 만들지 않고 준비된 결과로 ③ (장면·영상·자막 복사, 진행 표시용 작업 1건)",
           number == 2 and state == "video_ready" and jobs_made == 1
           and renders == {"s01": ("done", True, 3.0), "s02": ("done", True, 4.0)}
           and path and os.path.exists(path) and path != video
           and os.path.exists(os.path.join(os.path.dirname(path), "subtitles.srt"))
           and "A car turns a corner" in text and "An old shot two" not in text and "장면 구성 갱신" in notes,
           (state, renders, notes[-2:]))
+    check("데모 재생: 준비된 결과의 AI 점검 기록(장면별 점수·미달 장면·진행 기록)도 복사 → ③ 'AI 점검 결과'에 보임",
+          reviews == {"s01": 9.0, "s02": 9.0} and auto.get("flagged") == ["s02"] and auto.get("phase") == "done"
+          and any(e.get("text") == "준비된 점검 기록" for e in auto.get("log") or []), (reviews, auto))
 
     # 차수별 설정: 1차도 바로 만들고, 'YouTube에 올리기'는 이미 올린 영상(댓글이 달린)에 연결
     first_sid = make("데모 처음부터", "An old shot one\\nAn old shot two")

@@ -1,23 +1,32 @@
-"""[팀 직접 구현] 참조 사진 여러 장 — 얼굴 사진 + 실제 물건·장소 사진으로 첫 프레임을 그린다 (Qwen-Image-Edit-2511).
+"""[팀 직접 구현] 참고 사진 여러 장 — 인물·물건·장소 사진을 장면에 반영한다.
 
-Qwen-Image-Edit-2511은 한 번에 참조 이미지 3장까지 받는다. 사진은 여러 장 받아 두고 장면마다 필요한 것만 고른다:
-  1) 사람이 나오는 장면이면 얼굴 사진이 이미지 1
-  2) 장면 묘사에 사진의 영어 이름(en)이 나오면 그 사진을 이어서 (최대 3장)
+기본(REF_PHOTO_MODE=reference, 2026-11-07 사용자: Qwen을 쓰지 않는다): 사진을 그림에 넣지 않고 26B 비전이 사진마다
+생김새를 영어 한 줄로 읽어(describe·face.describe) 장면 줄에 글로 넣는다(describe_line) → Z-Image가 그린다.
+51번 영상(팀원 사진 특징을 장면 줄에 적어 만든 방식)이 Qwen으로 그린 것보다 AI 느낌이 덜했다.
+draw 모드는 예전 방식 — Qwen-Image-Edit-2511이 참조 이미지 3장까지 받아 첫 프레임을 사진대로 그린다
+(2026-11-04 시험: 얼굴 + 라즈베리파이 5·STM32 사진 → 기판은 포트·칩 배치까지 사진대로, 얼굴은 4장 중 3장 유지).
+장면마다 넣을 사진은 두 모드가 같은 규칙(pick)으로 고른다:
+  1) 사람이 나오는 장면이면 인물 사진 (여러 명이면 장면마다 무작위, 두 사람 장면은 서로 다른 두 명)
+  2) 장면 묘사에 사진의 영어 이름(en)이 나오면 그 사진 (물건은 장면당 하나, 합쳐 최대 3장)
 영어 이름은 AI 자동 기획 때 정하고(번역), 장면 다듬기에 "이 이름을 그대로 쓰라"고 알려 장면 묘사와 맞춘다.
-2026-11-04 시험: 얼굴 + 라즈베리파이 5·STM32 사진 → 기판은 포트·칩 배치까지 사진대로, 얼굴은 4장 중 3장 유지.
 """
 import json
 import os
 import re
 
-KINDS = {"object": "물건", "place": "장소", "person": "사람 얼굴"}
+KINDS = {"person": "인물", "object": "물건", "place": "장소"}
 # 사람 얼굴은 이름을 맞추지 않는다 — 사람이 나오는 장면마다 얼굴 사진 중에서 무작위로 고른다 (2026-11-06 사용자:
 # 팀원 세 명 얼굴로 랜덤하게). 두 사람이 나오는 장면은 서로 다른 두 얼굴.
 _TWO_PEOPLE = re.compile(r"\b(two|both|pair of|couple of)\b[^,.]*\b(students?|men|people|engineers?|persons?|friends?)\b|"
                          r"\b(?:man|student|engineer)\b[^,.]{0,80}\band\s+(?:a|an|another)\s+(?:\w+\s+){0,4}"
                          r"(?:man|student|engineer|person)\b", re.I)
 MAX_PHOTOS = 6
-MAX_PER_SHOT = 3  # Qwen-Image-Edit 참조 이미지 칸 수
+MAX_PER_SHOT = 3  # 장면당 사진 수 (draw 모드: Qwen-Image-Edit 참조 이미지 칸 수)
+
+
+def reference_mode(config):
+    """사진을 '참고'로만 쓰는지 (생김새를 글로 읽어 장면 묘사에 넣고, 사진으로 그리거나 합성하지 않음). 기본 True."""
+    return (config.get("REF_PHOTO_MODE") or "reference") == "reference"
 
 
 def load(session):
@@ -132,7 +141,7 @@ def planning_note(refs):
         lines.append("- 실제 사진이 있는 대상 (장면에 넣으면 사진대로 그린다): " + ", ".join(
             f"{r['name']}({KINDS.get(r.get('kind'), '물건')})" for r in things))
     if people:
-        lines.append(f"- 얼굴 사진 {len(people)}명 — 사람이 나오는 장면은 이 사람들 중에서 나온다")
+        lines.append(f"- 인물 사진 {len(people)}명 — 사람이 나오는 장면은 이 사람들 중에서 나온다")
     return "\n".join(lines)
 
 
@@ -144,3 +153,74 @@ def refine_note(refs):
     return ("Real things with reference photos — when a scene shows one, write its English name exactly as given, "
             "and show at most one of these objects per scene (spread them over different scenes): "
             + "; ".join(f'"{r["en"]}" ({r["name"]})' for r in named))
+
+
+_DESCRIBE_SYSTEM = {
+    "object": ("Describe the object in the photo for an image-generation prompt in ONE English line: what it is, "
+               "shape, size impression, colors, materials and the main visible parts (chips, ports, wheels, joints...). "
+               "Start with 'a' or 'an'. Do not mention printed text, labels, logos or brand names. No background."),
+    "place": ("Describe the place in the photo for an image-generation prompt in ONE English line: kind of room, "
+              "main furniture and equipment, wall and floor colors, lighting. Start with 'a' or 'an'. "
+              "Do not mention printed text, signs, logos or brand names. No people."),
+}
+
+
+def describe(path, kind, config):
+    """물건·장소 사진 → 영어 생김새 한 줄 (참고 사진 모드에서 장면 줄에 넣는다). 인물은 face.describe. 못 하면 "".
+    큰 모델(26B 비전)을 먼저, 못 쓰면 e2b — 자동 기획(작업 큐 안)에서 불린다."""
+    from . import comfy_text, face, llm
+
+    if kind == "person":
+        return face.describe(config, path)
+    if not path or not os.path.isfile(path):
+        return ""
+    system = _DESCRIBE_SYSTEM.get(kind, _DESCRIBE_SYSTEM["object"])
+    text = ""
+    if llm.vision_ready(config):
+        text, _reason = llm.generate_strong_only(system, "Describe this photo.", config, max_tokens=120, in_job=True,
+                                                 image_path=str(path), temperature=0.0)
+    if not text and config.get("LLM_COMFY_ENABLED", True):
+        c = comfy_text.client(config)
+        if c is not None:
+            try:
+                text = comfy_text.generate(c, config, system, "Describe this photo.", image_path=str(path),
+                                           max_length=80)
+            except Exception:
+                text = ""
+    return tidy((text or "").strip().splitlines()[0] if (text or "").strip() else "")
+
+
+def tidy(line, limit=300):
+    """모델이 쓴 생김새 한 줄 정리: 한국어면 버림, 'An an'처럼 겹친 관사는 하나로, 길면 쉼표·단어 단위로 자른다
+    (2026-11-07 실제 26B: 'An an electronic …', 220자에서 'compon'으로 잘림)."""
+    line = (line or "").strip(" .\"'")
+    if not line or re.search(r"[가-힣]", line):
+        return ""
+    line = re.sub(r"^(?:(an?)\s+)+(?:an?\s+)*", lambda m: m.group(1).lower() + " ", line, flags=re.I)
+    if len(line) > limit:
+        cut = line[:limit]
+        line = cut[:cut.rfind(",")] if "," in cut[limit // 2:] else cut[:cut.rfind(" ")]
+    return line.strip(" ,.")
+
+
+def describe_line(line, picked, desc_of):
+    """참고 사진 모드: 장면 줄에 고른 사진들의 생김새를 글로 붙인다 (이미 적혀 있으면 그대로).
+    picked = pick() 결과, desc_of = {사진 경로: 영어 생김새}. 생김새를 읽지 못한 사진은 건너뛴다."""
+    def has(desc):
+        key = re.sub(r"^an?\s+", "", desc.strip().lower())[:40]
+        return bool(key) and key in line.lower()
+
+    parts = []
+    for p in picked:
+        desc = desc_of.get(p["path"], "")
+        if not desc or has(desc):
+            continue
+        if p["label"] == "person":
+            who = "the main person" if p.get("of", 1) == 1 else ("the first person" if p.get("n") == 1
+                                                                  else "the second person")
+            parts.append(f"{who} is {desc}")
+        elif p.get("kind") == "place":
+            parts.append(f"the place is {desc}")
+        else:
+            parts.append(f"the {p['label']} is {desc}")
+    return f"{line.rstrip(' .;')}; " + "; ".join(parts) if parts else line
