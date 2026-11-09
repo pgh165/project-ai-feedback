@@ -10,7 +10,10 @@ import re
 
 _NUM = re.compile(r"^\s*(\d{1,2})\s*[.)]\s*(.+?)\s*$")
 HANGUL = re.compile(r"[가-힣]")
-LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
+# 내레이션 줄에 섞인 영어 단어(작은 모델이 영어로 답한 흔적)를 찾는다 — 내레이션은 한국어 음성으로 읽힌다.
+# 장면 줄에는 쓰지 않는다: 영어가 섞여도 ko_en이 줄 전체를 번역하고, 버리면 장면이 사라진다
+# (2026-11-04 'STM32 보드', 2026-11-06 '초록색 PCB 위 LED' 장면이 버려져 장면 수·내레이션 번호가 어긋났다)
+LATIN_WORD = re.compile(r"\b[A-Za-z]{3,}\b")
 
 _SYSTEM = (
     "너는 짧은 영상 기획자다. 사용자가 만들고 싶은 영상을 설명하면 아래 형식 그대로, 한국어로만 답한다.\n"
@@ -20,7 +23,8 @@ _SYSTEM = (
     "[장면]\n1. 한 장면의 화면 묘사 (누가·무엇을·어디서·카메라)\n2. ...\n(장면은 정확히 {n}개, 괄호 없이)\n"
     "[내레이션]\n1. 그 장면에 깔리는 문장 ({chars}자 이내)\n2. ...\n(장면과 같은 개수, 괄호·지시문 없이)\n"
     "스타일: (화면 분위기·조명·색감 한 줄)\n"
-    "화면에 글자·로고·자막이 나오는 장면은 만들지 않는다. 다른 말은 쓰지 않는다."
+    "화면에 글자·로고·자막이 나오는 장면은 만들지 않는다 (글자는 편집에서 넣는다). "
+    "모니터 화면·간판·책·포스터·라벨처럼 글자가 보일 물건을 장면의 중심에 두지 않는다. 다른 말은 쓰지 않는다."
 )
 
 FIELDS = ("title", "genre", "characters", "shots", "narration", "style")
@@ -75,13 +79,13 @@ def parse(text, n, chars, genres):
            "characters": _field(text, "등장 요소")[:200], "style": _field(text, "스타일")[:200]}
     if out["genre"] not in genres:  # 목록 밖이면 비슷한 것으로, 없으면 버린다
         out["genre"] = next((g for g in genres if g.split("·")[0] in out["genre"]), "")
-    good = lambda s: HANGUL.search(s) and not LATIN_WORD.search(re.sub(r"\b(?:AI|LED|PC|IT|MCU|USB)\b", "", s))
-    shots = [s for s in shots if good(s)]
-    narration = [s for s in narration if good(s) and len(s) <= chars + 10]
+    korean = lambda s: HANGUL.search(s) and not LATIN_WORD.search(re.sub(r"\b(?:AI|LED|PC|IT|MCU|USB)\b", "", s))
     if len(shots) >= 2:
         out["shots"] = "\n".join(shots)
-    if narration:  # 장면보다 적으면 뒤쪽 장면은 해설 없이 (번호로 장면에 맞춘다)
-        out["narration"] = "\n".join(f"{i}. {t}" for i, t in enumerate(narration[:n], start=1))
+    # 내레이션은 원래 번호를 지킨다 — 한 줄을 버려도 뒤 문장이 앞 장면으로 당겨지지 않게 (그 장면만 해설 없이)
+    kept = [(i, s) for i, s in enumerate(narration[:len(shots) or n], start=1) if korean(s) and len(s) <= chars + 10]
+    if kept:
+        out["narration"] = "\n".join(f"{i}. {t}" for i, t in kept)
     return {k: v for k, v in out.items() if v}
 
 
@@ -93,8 +97,9 @@ def shot_count(idea, config, shot_seconds=None):
     return max(3, min(n, int(config.get("LOCAL_VIDEO_MAX_SHOTS", 8))))
 
 
-def fill(form, config, genres):
-    """form: 세부사항 화면 값 dict → ({채운 칸: 값}, source). 비어 있던 칸만 돌려준다."""
+def fill(form, config, genres, in_job=False):
+    """form: 세부사항 화면 값 dict → ({채운 칸: 값}, source). 비어 있던 칸만 돌려준다.
+    in_job: AI 자동 기획(작업 큐 안)에서 부를 때 True — 큰 모델을 켤 수 있게 한다."""
     from . import ko_en, llm
 
     idea = (form.get("synopsis") or "").strip()
@@ -118,9 +123,11 @@ def fill(form, config, genres):
         known.append("[장면]\n" + "\n".join(f"{i}. {l.strip()}" for i, l in
                                            enumerate([l for l in form["shots"].splitlines() if l.strip()], 1)))
     user = idea + ("\n\n이미 정해진 값 (그대로 따른다):\n" + "\n".join(known) if known else "")
-    system = _SYSTEM.format(genres=" / ".join(genres), n=n, chars=chars)
+    from . import plan_rules
+    rules = plan_rules.as_text(form.get("rules") or [])  # 이 프로젝트에서 사용자가 답한 제작 원칙 — 설명보다 우선
+    system = _SYSTEM.format(genres=" / ".join(genres), n=n, chars=chars) + ("\n\n" + rules if rules else "")
     text, source, _reason = llm.generate_strong(system, user, config, max_tokens=900,
-                                                fallback_config=ko_en.engine_config(config))
+                                                fallback_config=ko_en.engine_config(config), in_job=in_job)
     if source == "template" or not text:
         raise DraftFillError("AI를 쓸 수 없습니다. ComfyUI를 켜거나 ANTHROPIC_API_KEY/OLLAMA_MODEL을 설정하세요.")
     parsed = parse(text, n, chars, genres)

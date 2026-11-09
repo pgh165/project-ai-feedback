@@ -1,0 +1,160 @@
+{# [데모] session/intake.html 복사본 — 질문은 준비된 것, 'AI에게 맡기기'는 데모 프로젝트로 (/demo/start). #}
+{% extends "_app_shell.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}AI에게 맡기기{% endblock %}
+{% block shell %}
+{# 첫 화면 다음: 부족한 정보만 묻고 나머지는 '이렇게 가정했어요'로 보여 준다. 'AI에게 맡기기'를 누르면
+   AI가 기획 → 이미지 → 점검 → 컷 → 점검 → 올릴 영상까지 만들고, 사람은 ③ 확인에서 한 번만 본다. #}
+<div class="page-head">
+  <div>
+    <a class="crumb" href="{{ url_for('demo.home') }}">다시 쓰기</a>
+    <h1 class="page-title">AI에게 맡기기</h1>
+    <p class="page-sub">부족한 것만 여쭤볼게요. 나머지는 아래처럼 정해서 만들고, 다 되면 한 번만 확인해 주세요.</p>
+  </div>
+</div>
+
+<form class="intake" id="intake-form" method="post" action="{{ url_for('demo.start') }}" enctype="multipart/form-data">
+  <input type="hidden" name="idea" value="{{ idea }}">
+  <section class="form-section intake-idea">
+    <legend>만들고 싶은 영상</legend>
+    <p class="intake-quote">{{ idea }}</p>
+  </section>
+
+  <section class="form-section" aria-labelledby="q-title">
+    <legend id="q-title">AI가 궁금한 것</legend>
+    <div id="intake-questions" aria-live="polite">
+      <p class="text-muted" id="intake-loading"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>설명을 읽고 있어요…</p>
+    </div>
+  </section>
+
+  <section class="form-section" aria-labelledby="a-title">
+    <legend id="a-title">이렇게 가정했어요 <span class="hint-inline">눌러서 바꿀 수 있어요</span></legend>
+    <div class="intake-assume" id="intake-assumptions"></div>
+  </section>
+
+  <section class="form-section" aria-labelledby="r-title">
+    {# [데모] 원본(참고 사진 모드)과 같은 칸 — 데모는 사진을 쓰지 않고 준비된 결과를 재생한다 (2026-11-07 사용자) #}
+    <legend id="r-title">참고 사진 <span class="optional">선택 · 최대 6장</span></legend>
+    <p class="form-text mt-0">사람·물건·장소 사진을 올리면 AI가 생김새를 읽어, 그 사람이나 물건이 나오는 장면에 그 모습으로 넣습니다.
+      {{ ui.tip('사진은 참고용입니다 — 영상에 사진을 붙이거나 합성하지 않고, AI가 읽어 낸 생김새(머리 모양·안경·옷, 물건의 모양·색·부품, 장소의 분위기)를 장면 묘사에 글로 넣어 그립니다. 그래서 똑같지는 않지만 장면마다 같은 사람·물건으로 보이고 AI 느낌이 덜합니다. 인물은 사람이 나오는 장면마다 올린 사람 중에서 나오고, 물건·장소는 AI가 장면을 짤 때 적어 둔 이름을 쓰는 장면에 들어갑니다(예: 라즈베리파이 5, STM32 보드). 사진은 이 컴퓨터의 instance 폴더에만 저장됩니다.') }}</p>
+    <div id="ref-rows"></div>
+    <button type="button" class="btn btn-outline-secondary btn-sm mb-3" id="ref-add">+ 사진 추가</button>
+  </section>
+
+  <section class="form-section" aria-labelledby="m-title">
+    <legend id="m-title">배경음악 파일 <span class="optional">선택</span></legend>
+    <label class="field d-block">
+      <input class="form-control" type="file" name="music_file" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg">
+      <span class="form-text">넣고 싶은 곡이 있으면 올려 주세요. 없으면 AI가 영상에 맞는 연주곡을 만들어요.
+        {{ ui.tip('올린 곡은 처음부터 영상 길이만큼 쓰고, 끝은 부드럽게 줄입니다. 내레이션이 나올 때는 음악이 자동으로 작아집니다. 저작권이 있는 곡은 YouTube에서 문제가 될 수 있습니다.') }}</span>
+    </label>
+  </section>
+  {# [데모] '장면 사진으로 만들기'·'물건·장소 사진' 칸은 데모에서 쓰지 않아 뺐다 (2026-11-07 사용자) #}
+
+  <div class="form-actions intake-actions">
+    <a class="btn btn-quiet" href="{{ url_for('session.create', idea=idea, aspect=aspect) }}">직접 기획하기</a>
+    <button class="btn btn-primary btn-lg" type="submit" id="intake-go" disabled>AI에게 맡기기 →</button>
+  </div>
+  <p class="hint-inline text-end">장면 수에 따라 20분~1시간쯤 걸려요. 창을 닫아도 계속 만들어요.</p>
+</form>
+
+<script>
+(function () {
+  const form = document.getElementById('intake-form');
+  const qBox = document.getElementById('intake-questions');
+  const aBox = document.getElementById('intake-assumptions');
+  const go = document.getElementById('intake-go');
+  const idea = {{ idea|tojson }}, aspect = {{ aspect|tojson }};
+  const LABELS = {
+    aspect: {'9:16': '세로 (쇼츠·릴스)', '16:9': '가로 (유튜브)', '1:1': '정사각'},
+    narration: {on: '한국어 내레이션 넣기 (기본 목소리)', off: '내레이션 없이'},
+    music: {on: '분위기에 맞는 연주곡 한 곡', off: '배경음악 없이'},
+  };
+  function el(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === 'class') n.className = v; else if (v !== false && v != null) n.setAttribute(k, v === true ? '' : v);
+    }
+    kids.flat().forEach(c => c != null && n.append(c.nodeType ? c : document.createTextNode(String(c))));
+    return n;
+  }
+  function optionLabel(key, value) {
+    if (key === 'seconds') return value + '초';
+    return (LABELS[key] || {})[value] || value;
+  }
+
+  function question(q, i) {
+    // 보기 + 직접 쓰기. 장르 질문은 폼의 genre 칸으로, 내용 질문은 question_N / answer_N,
+    // 제작 원칙 질문은 rule_question_N / rule_answer_N (답이 이 프로젝트에서 AI가 꼭 지킬 조건이 된다)
+    const pre = q.rule ? 'rule_' : '';
+    const name = q.key === 'genre' ? 'genre' : pre + 'answer_' + i;
+    const box = el('fieldset', {class: 'intake-q'}, el('legend', {}, q.question,
+                   q.rule ? el('span', {class: 'hint-inline ms-2'}, '꼭 지킬 조건') : null));
+    if (q.key !== 'genre') box.append(el('input', {type: 'hidden', name: pre + 'question_' + i, value: q.question}));
+    const chips = el('div', {class: 'genre-chips'});
+    q.options.forEach((o, j) => {
+      const id = `q${i}_${j}`;
+      chips.append(el('input', {type: 'radio', class: 'btn-check', name, id, value: o, required: q.key === 'genre'}),
+                   el('label', {class: 'btn btn-outline-secondary btn-sm', for: id}, o));
+    });
+    box.append(chips);
+    if (q.key !== 'genre') {
+      const other = el('input', {class: 'form-control form-control-sm mt-2', type: 'text', placeholder: '직접 쓰기 (비워 두면 AI가 정해요)', maxlength: 120});
+      other.addEventListener('input', () => {
+        form.querySelectorAll(`input[name="${name}"][type=radio]`).forEach(r => { r.checked = false; });
+        other.name = other.value.trim() ? name : '';
+      });
+      chips.addEventListener('change', () => { other.value = ''; other.name = ''; });
+      box.append(other);
+    }
+    return box;
+  }
+
+  function assumption(a) {
+    // 지금 값은 글로 보여 주고, 누르면 고를 수 있는 선택 칸으로 바뀐다
+    const sel = el('select', {class: 'form-select form-select-sm', name: a.key, 'aria-label': a.label},
+      a.options.map(o => el('option', {value: o, selected: String(o) === String(a.value)}, optionLabel(a.key, o))));
+    if (a.key === 'seconds' && !a.options.includes(String(a.value))) {
+      sel.prepend(el('option', {value: a.value, selected: true}, a.value + '초'));
+    }
+    return el('label', {class: 'intake-assume-row'}, el('span', {class: 'intake-assume-key'}, a.label), sel,
+              a.from_text ? el('span', {class: 'hint-inline'}, '설명에서 읽음') : null);
+  }
+
+  async function load() {
+    // [데모] 실제 화면은 /session/new/analyze(26B)에서 받아 온다 — 데모는 준비된 질문을 잠시 뒤 보여 준다
+    const data = {{ data|tojson }};
+    await new Promise(r => setTimeout(r, 2400));
+    qBox.replaceChildren();
+    if (!data.questions.length) qBox.append(el('p', {class: 'mb-3'}, '더 여쭤볼 것이 없어요. 바로 맡기셔도 돼요.'));
+    data.questions.forEach((q, i) => qBox.append(question(q, i + 1)));
+    aBox.replaceChildren(...data.assumptions.map(assumption));
+    go.disabled = false;
+  }
+  // 참고 사진 줄: 파일 + 이름 + 종류(인물·물건·장소) — 원본 화면과 같은 모양
+  const refRows = document.getElementById('ref-rows'), refAdd = document.getElementById('ref-add');
+  function addRef() {
+    if (refRows.children.length >= 6) return;
+    const name = el('input', {class: 'form-control form-control-sm', type: 'text', name: 'ref_name', maxlength: 60,
+                              placeholder: '이름 (예: 팀원 1, 라즈베리파이 5)', required: true});
+    const file = el('input', {class: 'form-control form-control-sm', type: 'file', name: 'ref_file',
+                              accept: '.jpg,.jpeg,.png,.webp', required: true});
+    file.addEventListener('change', () => {
+      if (!name.value && file.files.length) name.value = file.files[0].name.replace(/\.[^.]+$/, '').slice(0, 60);
+    });
+    const kind = el('select', {class: 'form-select form-select-sm', name: 'ref_kind', 'aria-label': '종류'},
+                    el('option', {value: 'person'}, '인물'), el('option', {value: 'object'}, '물건'),
+                    el('option', {value: 'place'}, '장소'));
+    const del = el('button', {type: 'button', class: 'btn btn-quiet btn-sm', 'aria-label': '이 사진 빼기'}, '빼기');
+    const row = el('div', {class: 'ref-row'}, file, name, kind, del);
+    del.addEventListener('click', () => { row.remove(); refAdd.disabled = false; });
+    refRows.append(row);
+    refAdd.disabled = refRows.children.length >= 6;
+  }
+  refAdd.addEventListener('click', addRef);
+
+  form.addEventListener('submit', () => { go.disabled = true; go.textContent = '맡기는 중…'; });
+  load();
+})();
+</script>
+{% endblock %}

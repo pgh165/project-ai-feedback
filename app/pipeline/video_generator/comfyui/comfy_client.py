@@ -165,12 +165,14 @@ class ComfyClient:
 
     @staticmethod
     def output_files(entry):
-        """history 출력에서 파일 정보 목록 추출. 영상 우선."""
+        """history 출력에서 파일 정보 목록 추출. 영상 우선.
+        LoadVideo 같은 입력 노드도 미리보기(type=input)를 출력으로 남긴다 — 그걸 결과로 받으면 참조 영상을 그대로
+        돌려받는다(2026-11-03 유니언 컨트롤 시험). 결과는 type이 output(또는 표시 없음)인 파일만."""
         files = []
         for out in entry.get("outputs", {}).values():
             for key in ("videos", "gifs", "images"):
                 for f in out.get(key, []):
-                    if isinstance(f, dict) and "filename" in f:
+                    if isinstance(f, dict) and "filename" in f and f.get("type", "output") not in ("input", "temp"):
                         files.append(f)
         video = [f for f in files
                  if Path(f["filename"]).suffix.lower() in (".mp4", ".webm", ".mov", ".mkv", ".gif")]

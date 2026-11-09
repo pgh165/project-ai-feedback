@@ -157,13 +157,28 @@ def resolve_params(storyboard, shot, config):
                 else config["COMFYUI_WORKFLOW_T2V"])
     if shot.get("image") and shot.get("end_image"):  # 처음·끝 프레임 고정 ('이 순간을 끝으로 다시 만들기')
         workflow = config.get("COMFYUI_WORKFLOW_FLF", "ltx25_flf2v")
+    # 우선순위: 끝 프레임 고정 > 참조 영상(유니언 컨트롤) > 움직임 경로
+    from . import reference_video
+    reference = reference_video.is_active(shot) and not shot.get("end_image")
+    if reference:
+        workflow = config.get("COMFYUI_WORKFLOW_UNION", "ltx25_union")
     # 경로를 그린 첫 프레임이면 경로대로 (끝 프레임을 고정한 다시 만들기는 끝 프레임이 우선)
-    motion = motion_tracks.is_active(shot) and not shot.get("end_image")
+    motion = motion_tracks.is_active(shot) and not shot.get("end_image") and not reference
     if motion:
         workflow = config.get("COMFYUI_WORKFLOW_MOTION", "ltx25_motion")
+    # 글자는 편집에서 넣는다 — 모델에는 글자가 생기기 쉬운 물건을 '글자 없는 모습'으로 고쳐 준다 (text_free)
+    from .text_free import make_textless
+    fix = make_textless if config.get("TEXTLESS_PROMPTS", True) else (lambda p: p)
+    # 카메라는 기본 고정 — 스타일 칸의 움직임은 모든 장면에 붙으므로 지우고, 장면 줄에 적은 움직임만 따른다 (camera.py)
+    from . import camera
+    steady = config.get("CAMERA_LOCK_DEFAULT", True)
+    board = camera.without_style_moves(storyboard) if steady else storyboard
+    # 끝 페이드아웃·어두워짐은 편집(엔딩 카드의 끝 페이드)으로 한다 — 모델에는 보내지 않는다 (camera.strip_fades)
+    video_prompt = camera.strip_fades(final_prompt(board, shot, config.get("STORYBOARD_APPEND_NOTES", True)))
+    image_prompt = camera.strip_fades(final_prompt(board, shot, config.get("STORYBOARD_APPEND_NOTES", True), first_frame=True))
     return {
-        "prompt": final_prompt(storyboard, shot, config.get("STORYBOARD_APPEND_NOTES", True)),
-        "image_prompt": final_prompt(storyboard, shot, config.get("STORYBOARD_APPEND_NOTES", True), first_frame=True),
+        "prompt": fix(camera.lock(video_prompt) if steady else video_prompt),
+        "image_prompt": fix(image_prompt),
         "negative": storyboard["negative"],
         "width": width, "height": height, "frames": frames, "fps": fps,
         "seed": int(shot.get("seed", defaults["seed"])),
@@ -171,12 +186,19 @@ def resolve_params(storyboard, shot, config):
         "end_image": shot.get("end_image") if shot.get("image") else None,
         "image_first": image_first,
         "tracks": motion_tracks.render(shot["motion"], width, height, frames) if motion else None,
+        "reference": shot["reference"]["video"] if reference else None,
+        "face": shot.get("face") or None,  # 얼굴 사진 (사람 장면 첫 프레임을 그 사람으로 그린다, orchestrator가 넣는다)
+        "refs": shot.get("refs") or None,  # 참조 사진 여러 장 [{"path","label","kind"}] (ref_photos.pick, orchestrator가 넣는다)
+        # 참조 영상만 따를 때는 첫 프레임 이미지를 쓰지 않는다 (구도가 달라 충돌한다)
+        "bypass_image": bool(reference and not shot["reference"].get("first_frame")),
     }
 
 
 def shot_signature(storyboard, shot):
     """라운드 간 '같은 장면인가' 비교용 — 프롬프트·스타일·해상도·길이·움직임 경로가 같으면 같은 장면."""
+    from . import reference_video
     d = storyboard["defaults"]
     return (shot["prompt"].strip(), storyboard["style"].strip(), float(shot["duration"]),
             int(d["width"]), int(d["height"]), int(d["fps"]), shot.get("image") or "",
-            motion_tracks.digest(shot["motion"]) if shot.get("motion") else "")
+            motion_tracks.digest(shot["motion"]) if shot.get("motion") else "",
+            reference_video.digest(shot["reference"]) if shot.get("reference") else "")

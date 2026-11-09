@@ -105,17 +105,12 @@
     } else if (data.adapter_used && isDev) {
       badgeEl.append(el('span', {class: 'dev-badge'}, data.adapter_used));
     }
-    if (data.commercial_spent_usd > 0) {
-      badgeEl.append(el('span', {class: 'badge text-bg-info'},
-        `상용 API ${money(data.commercial_spent_usd)} / ${money(data.commercial_budget_usd)}`));
-    }
   }
 
   // ── 패널 ──
   function shotBadge(s) {
     if (s.reused) return el('span', {class: 'badge text-bg-light'}, '재사용');
-    return el('span', {class: 'badge ' + (s.generator === 'api' ? 'text-bg-info' : 'text-bg-secondary')},
-      s.generator === 'api' ? 'API' : (s.provider === 'mock' ? 'mock' : '로컬'));
+    return el('span', {class: 'badge text-bg-secondary'}, s.provider === 'mock' ? 'mock' : '로컬');
   }
 
   // ③ 확인 = 올릴 영상(러프컷). 영상 자체는 본문 무대에 있으므로 여기서는 상태·추가 작업만 보여 준다.
@@ -127,66 +122,6 @@
     const narr = data.narration || {};
     if (narr.status && narr.status !== 'none') {
       box.append(el('div', {class: 'small mb-2'}, '내레이션: ' + (narr.detail || narr.status)));
-    }
-    const canEscalate = isCurrent && data.state === 'video_ready' && data.commercial.available;
-    if (!canEscalate) return box;   // 유료 API 재생성을 쓸 수 없으면 장면 목록을 다시 늘어놓지 않는다
-    box.append(el('div', {class: 'small fw-semibold mb-1'}, '품질이 부족한 장면을 유료 API로 다시 만들기'));
-    const list = el('div', {class: 'row g-2 mb-3'});
-    data.shots.forEach(s => {
-      const checkbox = canEscalate ? el('input', {
-        type: 'checkbox', class: 'form-check-input me-2', disabled: !data.commercial.available,
-        checked: picked.has(s.id),
-        onchange: e => { e.target.checked ? picked.add(s.id) : picked.delete(s.id); renderPanel(); },
-      }) : null;
-      const card = el('div', {class: 'card h-100'}, el('div', {class: 'card-body p-2 small'},
-        el('div', {class: 'd-flex align-items-center mb-1'}, checkbox,
-          el('strong', {}, s.id), el('span', {class: 'text-muted ms-2'},
-            `${s.start.toFixed(0)}–${s.end.toFixed(0)}초`), el('span', {class: 'ms-auto'}, shotBadge(s))),
-        s.recommend_api ? el('span', {class: 'badge text-bg-warning me-1'}, 'API 권장 (재발)') : null,
-        s.status === 'failed' ? el('span', {class: 'badge text-bg-danger'}, '실패') : null,
-        el('div', {class: 'text-muted shot-prompt'}, s.prompt),
-        s.error ? el('div', {class: 'text-danger'}, s.error) : null,
-        s.cost_usd > 0 ? el('div', {}, `비용 ${money(s.cost_usd)}`) : null));
-      if (s.versions.length > 1 && canEscalate) {
-        const sel = el('select', {class: 'form-select form-select-sm mt-1',
-          onchange: async e => {
-            const res = await fetch(`${root.dataset.apiRoot}/shots/${e.target.value}/select`, {method: 'POST'});
-            if (!res.ok) alert((await res.json()).error || '버전 선택 실패');
-            refresh();
-          }},
-          s.versions.map(v => el('option', {value: v.render_id, selected: v.selected},
-            `v${v.version} · ${v.generator === 'api' ? 'API' : '로컬'}`)));
-        card.firstChild.append(sel);
-      }
-      if (canEscalate && picked.has(s.id)) {
-        const reason = el('select', {class: 'form-select form-select-sm mt-1',
-          onchange: e => { flags[s.id] = e.target.value ? [e.target.value] : []; }},
-          el('option', {value: ''}, '품질 부족 사유…'),
-          Object.entries(data.commercial.reasons).map(([k, label]) =>
-            el('option', {value: k, selected: (flags[s.id] || [])[0] === k}, label)));
-        card.firstChild.append(reason);
-      }
-      list.append(el('div', {class: 'col-md-6'}, card));
-    });
-    box.append(list);
-
-    {
-      const cost = data.shots.filter(s => picked.has(s.id))
-        .reduce((a, s) => a + s.estimate_api_cost_usd, 0);
-      const remaining = data.commercial_remaining_usd;
-      const actions = el('div', {class: 'd-flex flex-wrap gap-2 align-items-center'});
-      actions.append(el('button', {
-        class: 'btn btn-outline-primary', disabled: picked.size === 0,
-        onclick: async () => {
-          const ids = [...picked];
-          if (!confirm(`선택한 ${ids.length}개 장면을 상용 API로 재생성합니다.\n예상 비용 ${money(cost)} (남은 예산 ${money(remaining)})`)) return;
-          const r = await post('/escalate', {shot_ids: ids, flags, confirm_cost_usd: Number(cost.toFixed(4))});
-          if (!r.ok) alert(r.json.error || '재생성 요청 실패');
-          picked.clear();
-          refresh();
-        },
-      }, `고른 장면을 유료 API로 다시 만들기 (예상 ${money(cost)}, 남은 예산 ${money(remaining)})`));
-      box.append(actions);
     }
     return box;
   }

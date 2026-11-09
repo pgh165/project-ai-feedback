@@ -1,8 +1,7 @@
 """[팀 직접 구현] 파이프라인 점검용 개발 페이지 — /dev/pipeline-test.
 
 로컬에서 영상 파이프라인(ComfyUI·작업 큐·부분 재생성 등)이 의도대로 동작하는지 눈으로 보고
-자동 판정한다. `[TEST]` 접두어가 붙은 세션만 만들고 지우며, 상용 API는 호출하지 않는다
-(상용 재생성은 스테퍼 ③ 패널에서 사람이 직접 눌러야만 실행된다).
+자동 판정한다. `[TEST]` 접두어가 붙은 세션만 만들고 지운다.
 DEV_TEST_PAGE=false로 끌 수 있다.
 """
 import json
@@ -15,11 +14,10 @@ from flask import Blueprint, abort, current_app, jsonify, render_template, reque
 from ..models import (
     ALL_STATUSES, GenerationJob, PipelineSession, VideoRound, db,
 )
-from ..pipeline import approval, orchestrator, quality_gate, storyboard_model as sbm, youtube_client
+from ..pipeline import approval, orchestrator, storyboard_model as sbm, youtube_client
 from ..pipeline.orchestrator import InvalidTransition, PipelineError
 from ..pipeline import narration
 from ..pipeline.prompt_builder import build_initial_prompt, extract_shots
-from ..pipeline.video_generator import commercial_available
 from ..pipeline.video_generator.comfyui import rough_cut, workflow
 from ..pipeline.video_generator.comfyui.comfy_client import ComfyClient
 from ..pipeline.video_generator.factory import configured_name
@@ -91,9 +89,6 @@ def env():
         else "SIMULATION_MODE=false — 이 페이지의 '다음 단계'는 시뮬레이션 모드에서만 동작합니다")
     add("approval", "영상 확인 후 업로드", "pass",
         f"REQUIRE_VIDEO_APPROVAL={cfg['REQUIRE_VIDEO_APPROVAL']}")
-    add("commercial", "상용 API", "pass",
-        "키 없음 — 상용 재생성 비활성화 (이 점검에서 호출되지 않음)" if not commercial_available(cfg)
-        else "키 있음 — ③ 패널에서 사람이 누르기 전에는 호출되지 않음")
     voice_ok, voice_detail = narration.is_available(cfg)
     add("voice", "내레이션 음성 (TTS)", "pass" if voice_ok else "warn",
         f"{cfg.get('VOICE_ADAPTER')} — {voice_detail}" if voice_ok
@@ -425,12 +420,7 @@ def _run_checks(app, round_obj):
     else:
         add("approval", "영상 확인 전 업로드 금지", "③에서 확인 대기", "skip", f"현재 단계: {state}")
 
-    # 5. 상용 API 미사용
-    spent = quality_gate.session_spent(round_obj.session_id)
-    add("cost", "상용 API 비용", "사람이 누르지 않았다면 $0",
-        "pass" if spent == 0 else "warn", f"${spent:.2f}")
-
-    # 6. GPU 동시 실행 1개
+    # 5. GPU 동시 실행 1개
     running = GenerationJob.query.filter_by(status="running").count()
     add("gpu", "작업 동시 실행", "실행 중 작업은 최대 1개", "pass" if running <= 1 else "fail",
         f"running={running}")

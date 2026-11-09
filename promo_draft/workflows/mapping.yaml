@@ -85,3 +85,24 @@ ltx25_motion:
   fps:      {node: "43", input: value}
   image:    {node: "6", input: image}
   tracks:   {node: "23", input: tracks}
+
+# 유니언 컨트롤 (LTX IC-LoRA Union Control, 2026-11-03 승인 설치): 참조 영상의 윤곽선(Canny)을 따라 첫 프레임을 움직인다
+ltx25_union:
+  prompt:    {node: "20", input: text}
+  negative:  {node: "21", input: text}
+  seed:      {node: "29", input: noise_seed}
+  width:     {node: "40", input: value}
+  height:    {node: "41", input: value}
+  frames:    {node: "42", input: value}
+  fps:       {node: "43", input: value}
+  image:     {node: "6", input: image}
+  reference: {node: "50", input: file}
+  bypass_image: {node: "25", input: bypass}
+
+# 얼굴 사진으로 인물 그리기 (Qwen-Image-Edit-2511 + Lightning 4단계, 2026-11-03 승인 설치): 사진 속 사람이 나오는 첫 프레임
+qwen_face_t2i:
+  prompt:  {node: "8", input: prompt}
+  seed:    {node: "13", input: seed}
+  width:   {node: "12", input: width}
+  height:  {node: "12", input: height}
+  image:   {node: "6", input: image}

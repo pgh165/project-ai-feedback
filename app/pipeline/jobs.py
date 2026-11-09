@@ -23,9 +23,11 @@ _GPU_KINDS = ("generate_video", "regenerate_shots", "import_video")  # ComfyUI(G
 
 
 def _handlers():
-    from . import orchestrator, video_import
+    from . import auto_pipeline, orchestrator, video_import
 
     return {
+        # AI 자동 기획: 글 모델(큰 모델은 strong_server가 켜고 끈다) → 끝나면 generate_video(auto)를 이어서 건다
+        "auto_plan": lambda app, job, payload: auto_pipeline.run_auto_plan(app, job.round_id, payload),
         "generate_video": lambda app, job, payload: orchestrator.run_generation(app, job.round_id, payload),
         "regenerate_shots": lambda app, job, payload: orchestrator.run_generation(app, job.round_id, payload),
         "cluster": lambda app, job, payload: orchestrator.run_clustering_job(app, job.round_id),
@@ -98,7 +100,10 @@ def recover_interrupted(app):
             round_obj = db.session.get(VideoRound, job.round_id)
             if round_obj is None:
                 continue
-            if job.kind == "youtube_upload":  # 영상은 ③에 그대로 있다 — 다시 누르면 처음부터 올린다
+            if job.kind == "auto_plan":  # ① 기획에 남는다 — 기획 탭에서 'AI에게 다시 맡기기'로 이어 간다
+                round_obj.video_job_status = "failed"
+                round_obj.video_job_message = "앱이 재시작되어 AI 기획이 중단되었습니다. 다시 맡겨 주세요."
+            elif job.kind == "youtube_upload":  # 영상은 ③에 그대로 있다 — 다시 누르면 처음부터 올린다
                 round_obj.video_job_status = "failed"
                 round_obj.video_job_message = "앱이 재시작되어 YouTube 업로드가 중단되었습니다. 다시 올려 주세요."
             elif round_obj.status == "generating":

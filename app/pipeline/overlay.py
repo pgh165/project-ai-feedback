@@ -50,6 +50,47 @@ def load_logo(session):
         return normalize_logo({})
 
 
+# ── 엔딩 카드 · 끝 페이드아웃 (2026-11-06) ─────────────────────────────────
+# 상용 영상처럼 마지막 장면을 검게 사라지게 한 뒤 배경색 + 로고 + 학과명 카드로 끝낸다. 어두워지는 건 편집 효과라
+# AI에게 시키지 않는다(시키면 장면 안의 조명이 꺼지는 것처럼만 나왔다 — 프로젝트 51 s06). 프로젝트 설정(brand_json["end_card"]).
+END_CARD_DEFAULTS = {"enabled": False, "seconds": 5.0, "color": "#0b1d3a", "text": "군산대학교\n임베디드소프트웨어학과",
+                     "text_color": "#ffffff", "logo": True, "narration": True, "fade_sec": 1.2}
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def normalize_end_card(data):
+    out = copy.deepcopy(END_CARD_DEFAULTS)
+    src = data or {}
+    out["enabled"] = bool(src.get("enabled"))
+    out["logo"] = bool(src.get("logo", out["logo"]))
+    out["narration"] = bool(src.get("narration", out["narration"]))
+    for key in ("color", "text_color"):
+        if _HEX.match(str(src.get(key) or "")):
+            out[key] = str(src[key])
+    if src.get("text") is not None:
+        lines = [l.strip() for l in str(src["text"]).splitlines() if l.strip()][:4]
+        out["text"] = "\n".join(l[:40] for l in lines)
+    for key, (lo, hi) in (("seconds", (2.0, 12.0)), ("fade_sec", (0.0, 3.0))):
+        try:
+            out[key] = round(min(max(float(src.get(key, out[key])), lo), hi), 2)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def load_end_card(session):
+    try:
+        data = json.loads(session.brand_json) if session.brand_json else {}
+    except ValueError:
+        data = {}
+    return normalize_end_card(data.get("end_card"))
+
+
+def brand_dumps(logo, end_card):
+    """brand_json 저장 — 로고 설정과 엔딩 카드를 함께 (로고만 저장하면 엔딩 카드가 지워졌다)."""
+    return json.dumps({**normalize_logo(logo), "end_card": normalize_end_card(end_card)}, ensure_ascii=False)
+
+
 VECTOR_TYPES = {".ai", ".pdf"}
 
 

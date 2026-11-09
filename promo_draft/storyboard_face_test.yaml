@@ -1,0 +1,41 @@
+# 본인 사진 I2V 시험. 사진 비율(3:4)에 맞춰 잘림 없이 생성. 부정 프롬프트는 CFG=1이라 효과가 없어 비워 둔다.
+project: face-test
+defaults:
+  workflow: ltx25_i2v
+  width: 960
+  height: 1280
+  frames: 121
+  fps: 24
+  seed: 500
+  negative_prompt: ""
+shots:
+  - id: f01
+    image: assets/photos/face/portrait.jpg
+    prompt: "Use the provided image as the first frame. A young Korean man with a thick black bowl-cut hairstyle and thin round metal glasses, wearing a black crew-neck t-shirt, faces the camera against a plain gray studio background. He blinks naturally, then slowly breaks into a gentle closed-mouth smile and gives one small nod. His face, glasses, hair and clothing stay exactly as shown. Soft, even studio lighting. Locked-off static camera."
+  # 프로젝트 31번 s01 첫 프레임의 얼굴을 본인 사진으로 합성한 뒤 움직임 (묘사는 s01 그대로, 카메라 움직임은 동일)
+  - id: s01_face
+    image: assets/photos/face/s01_face.png
+    width: 960
+    height: 576
+    seed: 42
+    prompt: "Bright clean modern robotics lab, soft diffused studio lighting, cool blue-gray walls, a small toy-sized four-wheeled robot car drives slowly between small orange traffic cones on a white desk, behind it a young Korean man in a gray hoodie sits watching a laptop that shows a colorful LiDAR scan, eye-level medium shot, slow push-in. clean commercial advertising look, crisp focus, natural skin tones, realistic, smooth gimbal motion"
+  # s01_face는 안경·머리가 사진과 달라 첫 프레임부터 다시 만듦 (tools/faceswap: Z-Image → 얼굴 합성). 고개·카메라 움직임을 줄임
+  - id: s01_face2
+    image: assets/photos/face/s01_face2.png
+    width: 960
+    height: 576
+    seed: 800
+    prompt: "Bright clean modern robotics lab, soft diffused studio lighting, cool blue-gray walls. The small white four-wheeled robot car on the desk rolls slowly forward past the small orange traffic cones, its blue lens eyes glowing. Behind it, the young Korean man in thin round glasses and a gray hoodie keeps his head in the same position, his hand resting on the laptop, blinking calmly with a relaxed expression while looking toward the camera. The laptop screen keeps showing the colorful LiDAR scan. Eye-level medium shot, nearly static camera with a very subtle slow push-in. clean commercial advertising look, crisp focus, natural skin tones, realistic"
+  # 움직임 비교: 프롬프트만 쓴 T2V (차가 카메라 쪽으로 달려오는 전진 동작)
+  - id: t2v_car
+    workflow: ltx25_t2v
+    width: 960
+    height: 576
+    seed: 900
+    prompt: "Bright clean modern robotics lab, soft diffused studio lighting, cool blue-gray walls. A small toy-sized white four-wheeled robot car with blue lens eyes drives along a white desk straight toward the camera, weaving between small orange traffic cones and growing larger in the frame. Behind it, out of focus, a young Korean man in a gray hoodie watches an open laptop. Low tracking shot beside the car, clean commercial advertising look, realistic"
+  # f01은 미소가 과해서 동작을 아주 작게 묘사하고 3초로 줄임
+  - id: f02
+    image: assets/photos/face/portrait.jpg
+    frames: 73
+    seed: 510
+    prompt: "Use the provided image as the first frame. A young Korean man with a thick black bowl-cut hairstyle and thin round metal glasses, wearing a black crew-neck t-shirt, faces the camera against a plain gray studio background. He keeps a calm, relaxed, nearly neutral expression with his lips gently closed and his eyes open, looking steadily at the camera. He blinks once slowly, and the corners of his mouth lift just a tiny amount. His head stays still with only slight natural breathing movement. Soft, even studio lighting. Locked-off static camera."

@@ -1,7 +1,6 @@
 """영상 파이프라인 통합 검증 (VIDEO_PIPELINE_INTEGRATION.md 14절 7단계).
 
-run_check.py에서 호출한다. 가짜 ComfyUI 서버와 가짜 상용 API HTTP를 쓰므로
-GPU·모델·API 키 없이 돌아가며, 실제 상용 API는 호출하지 않는다.
+run_check.py에서 호출한다. 가짜 ComfyUI 서버를 쓰므로 GPU·모델 없이 돌아간다.
 """
 import json
 import os
@@ -18,7 +17,7 @@ from app.pipeline import approval, jobs, orchestrator
 from app.pipeline import storyboard_model as sbm
 from app.pipeline.classifier.timestamp import extract_timestamp_sec
 from app.pipeline.video_generator.comfyui import rough_cut, workflow
-from tests.fake_comfyui import FakeComfyUI, FakeRunwayHTTP, make_sample_mp4
+from tests.fake_comfyui import FakeComfyUI, make_sample_mp4
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS_DIR = os.path.join(_ROOT, "promo_draft", "workflows")
@@ -44,8 +43,10 @@ def _app(tmp, name, **overrides):
         "OLLAMA_MODEL": "",
         "LLM_COMFY_ENABLED": False,  # 실제 ComfyUI의 Gemma를 부르지 않는다
         "REFINE_LLM_URL": "",  # 큰 모델(llama-server)도 켜지 않는다
+        # 실제 ComfyUI에 닿지 않게 기본은 닫힌 주소 — 가짜 ComfyUI가 필요한 검증은 fake.url로 덮어쓴다
+        # (2026-11-06: 중지 검증이 .env 주소로 /interrupt를 보내 실제 생성 중이던 컷이 끊겼다)
+        "COMFYUI_URL": "http://127.0.0.1:9",
         "BGM_AUTO": False,  # 배경음악은 _music_checks에서 따로 켜서 본다
-        "RUNWAY_API_KEY": "",
         "VIDEO_OUTPUT_DIR": os.path.join(tmp, f"out_{name}"),
         "STORYBOARD_SHOT_SECONDS": 5,
     }
@@ -422,6 +423,18 @@ def run(check):
         check("② 단계가 '이미지 확인 대기'(waiting)로 표시됨",
               st["steps"][1]["status"] == "waiting" and "이미지" in st["steps"][1]["detail"])
 
+        # 이미지를 다 그린 직후 작업이 끊긴 경우 (실제 사례 2026-11-06 프로젝트 41: 재시도가 컷 없이 video_ready로 갔다)
+        with app.app_context():
+            r_obj = db.session.get(VideoRound, rid)
+            r_obj.status, r_obj.generation_error = FAILED_STATUS, "앱이 재시작되어 생성이 중단되었습니다. 재시도하세요."
+            db.session.commit()
+        sub_retry = len(fake.submitted)
+        res = client.post(f"/api/rounds/{rid}/retry")
+        st = _status(client, rid)
+        check("이미지만 그려진 채 끊긴 작업을 재시도하면 이미지 확인(images_ready)으로 돌아감 (러프컷으로 건너뛰지 않음)",
+              res.status_code == 200 and st["state"] == "images_ready" and not st["video_url"]
+              and len(fake.submitted) == sub_retry, f"{res.status_code} {st['state']} 제출 {len(fake.submitted) - sub_retry}")
+
         seed_before = _shot(st, "s02")["seed"]
         r = client.post(f"/api/rounds/{rid}/images/regenerate",
                         json={"shot_id": "s02", "note": "brighter lighting"})
@@ -641,7 +654,7 @@ def run(check):
               and r_back.status_code == 400 and "차례로" in r_back.get_json()["error"], (r_out.status_code, r_back.status_code))
         real_strong, answers = llm.generate_strong, {}
 
-        def fake_strong(system, user, config, max_tokens=0, fallback_config=None):
+        def fake_strong(system, user, config, max_tokens=0, fallback_config=None, in_job=False):
             return answers.get(user, "모르겠습니다"), "fake", ""
         llm.generate_strong = fake_strong
         try:
@@ -726,59 +739,31 @@ def run(check):
               f"추가 제출 {len(fake.submitted) - mid}건 {[sorted({n.get('class_type') for n in wf.values()})[:4] for wf in fake.submitted[mid:]]}, versions={versions}")
         check("정상 상태에서 retry → 409", client.post(f"/api/rounds/{rid}/retry").status_code == 409)
 
-        # ── 상용 API 에스컬레이션 ──
-        print("\n── 상용 API 품질 에스컬레이션 ──")
-        sample = make_sample_mp4(ffmpeg, Path(tmp) / "api_sample.mp4", size="64x96")
-        fake_http = FakeRunwayHTTP(sample)
-        app = _app(tmp, "escalate", **base, REQUIRE_VIDEO_APPROVAL=True, RUNWAY_API_KEY="test-key",
-                   _COMMERCIAL_HTTP=fake_http, COMMERCIAL_COST_PER_SEC_USD=0.12,
-                   COMMERCIAL_BUDGET_USD=30, RUNWAY_POLL_INTERVAL_SEC=0.01)
+        # ── ③ 확인에서 장면 버전 고르기 (상용 API 재생성은 2026-11-05에 뺐다) ──
+        print("\n── ③ 장면 버전 고르기 ──")
+        app = _app(tmp, "select", **base, REQUIRE_VIDEO_APPROVAL=True)
         client = app.test_client()
         sid, rid = _create(client, app)
         client.post(f"/session/{sid}/generate")
         st = _status(client, rid)
-        check("③ 영상 확인 대기(waiting) — 자동 업로드 안 함",
-              st["state"] == "video_ready" and st["steps"][2]["status"] == "waiting"
-              and st["commercial"]["available"], st["steps"][2]["status"])
-        api_calls = len(fake_http.requests)
-        r = client.post(f"/api/rounds/{rid}/escalate", json={
-            "shot_ids": ["s02"], "flags": {"s02": ["face_hands"]}, "confirm_cost_usd": 0.01})
-        check("확인 비용 불일치 → 409 cost_mismatch",
-              r.status_code == 409 and r.get_json()["code"] == "cost_mismatch"
-              and abs(r.get_json()["server_cost_usd"] - 0.24) < 1e-6 and len(fake_http.requests) == api_calls)
-        app.config["COMMERCIAL_BUDGET_USD"] = 0.1
-        r = client.post(f"/api/rounds/{rid}/escalate", json={"shot_ids": ["s02"], "confirm_cost_usd": 0.24})
-        check("예산 초과 → 409 budget_exceeded, API 미호출",
-              r.status_code == 409 and r.get_json()["code"] == "budget_exceeded"
-              and len(fake_http.requests) == api_calls)
-        app.config["COMMERCIAL_BUDGET_USD"] = 30
-        r = client.post(f"/api/rounds/{rid}/escalate", json={
-            "shot_ids": ["s02"], "flags": {"s02": ["face_hands"]}, "confirm_cost_usd": 0.24})
-        st = _status(client, rid)
-        by_id = {s["id"]: s for s in st["shots"]}
-        check("선택 장면만 API로 재생성, 나머지는 로컬 유지",
-              r.status_code == 200 and st["state"] == "video_ready"
-              and by_id["s02"]["generator"] == "api" and by_id["s02"]["provider"] == "runway"
-              and by_id["s01"]["generator"] == "local" and by_id["s03"]["generator"] == "local"
-              and len(fake_http.requests) == api_calls + 1, f"{by_id['s02']['provider']}")
-        check("비용 기록·누적 (s02 2초 × $0.12 = $0.24)",
-              abs(by_id["s02"]["cost_usd"] - 0.24) < 1e-6 and abs(st["commercial_spent_usd"] - 0.24) < 1e-6
-              and st["adapter_used"] == "mixed", f"{st['commercial_spent_usd']} {st['adapter_used']}")
-        with app.app_context():
-            local_render = ShotRender.query.filter_by(
-                round_id=rid, shot_id="s02", generator="local").first()
-            flags = local_render.quality_flags
-            metric = Metric.query.filter_by(round_id=rid).first()
-            video_path = db.session.get(VideoRound, rid).video_path
-            local_id = local_render.id
-        check("품질 부족 사유 기록 + 지표(api_shots/cost)",
-              flags == ["face_hands"] and metric.api_shots == 1 and abs(metric.api_cost_usd - 0.24) < 1e-6)
-        check("러프컷이 다시 합성됨", bool(video_path) and os.path.getsize(video_path) > 0)
+        check("③ 영상 확인 대기(waiting) — 자동 업로드 안 함, 상용 API 항목 없음",
+              st["state"] == "video_ready" and st["steps"][2]["status"] == "waiting" and "commercial" not in st,
+              st["steps"][2]["status"])
+        check("상용 재생성 API 없어짐", client.post(f"/api/rounds/{rid}/escalate", json={}).status_code in (404, 405))
+        with app.app_context():  # 같은 장면의 두 번째 버전 (다시 만든 컷)
+            first = ShotRender.query.filter_by(round_id=rid, shot_id="s02", version=1).first()
+            second = ShotRender(round_id=rid, shot_id="s02", version=2, status="done", generator="local",
+                                provider=first.provider, workflow=first.workflow, prompt=first.prompt, seed=first.seed + 101,
+                                width=first.width, height=first.height, frames=first.frames, fps=first.fps,
+                                duration=first.duration, path=first.path, selected=False)
+            db.session.add(second)
+            db.session.commit()
+            local_id, second_id = first.id, second.id
         with app.app_context():
             jobs_before = GenerationJob.query.filter_by(round_id=rid).count()
-        check("로컬 버전 다시 선택 가능 (/select)",
-              client.post(f"/api/shots/{local_id}/select").status_code == 200
-              and {s["id"]: s for s in _status(client, rid)["shots"]}["s02"]["generator"] == "local")
+        check("다른 버전 선택 가능 (/select)",
+              client.post(f"/api/shots/{second_id}/select").status_code == 200
+              and {s["id"]: s for s in _status(client, rid)["shots"]}["s02"]["render_id"] == second_id)
         with app.app_context():
             new_jobs = [json.loads(j.payload_json or "{}") for j in
                         GenerationJob.query.filter_by(round_id=rid).order_by(GenerationJob.id).all()[jobs_before:]]
@@ -794,9 +779,7 @@ def run(check):
             db.session.add(waiting)
             db.session.commit()
             count = GenerationJob.query.filter_by(round_id=rid).count()
-            other = next(r for r in ShotRender.query.filter_by(round_id=rid, shot_id="s02", status="done")
-                         if r.generator != "local")
-            other_id, waiting_id = other.id, waiting.id
+            other_id, waiting_id = local_id, waiting.id
         r = client.post(f"/api/shots/{other_id}/select")
         with app.app_context():
             same_count = GenerationJob.query.filter_by(round_id=rid).count() == count
@@ -810,16 +793,6 @@ def run(check):
         check("업로드 진행 → ④ uploaded",
               r.status_code == 200 and _status(client, rid)["state"] == "uploaded")
 
-        # API 키 없음: 버튼 비활성화 + 요청 거부 (mock으로 몰래 대체하지 않음)
-        app = _app(tmp, "nokey", **base, REQUIRE_VIDEO_APPROVAL=True)
-        client = app.test_client()
-        sid, rid = _create(client, app)
-        client.post(f"/session/{sid}/generate")
-        st = _status(client, rid)
-        r = client.post(f"/api/rounds/{rid}/escalate", json={"shot_ids": ["s01"], "confirm_cost_usd": 0.24})
-        check("API 키 없음 → 재생성 불가 표시 + 409",
-              st["commercial"]["available"] is False and r.status_code == 409
-              and r.get_json()["code"] == "commercial_unavailable")
     finally:
         fake.stop()
 
@@ -1235,7 +1208,14 @@ def _music_checks(check, tmp, ffmpeg):
               (calls, level))
         client.post(f"/session/{sid}/decorate", data=dict(form, music_volume="40"))
         check("크기만 바꿔 다시 만들면 같은 곡 재사용 (새로 만들지 않음)", len(calls) == 1, calls)
-        check("YouTube 설명에 배경음악 출처 표기 (MiniMax-Music3)", bgm.CREDIT in desc)
+        check("YouTube 설명에 배경음악 출처 표기 (기본 Stable Audio)",
+              bgm.credit(app.config) in desc and "Stability AI" in desc, desc[-80:])
+        from app.pipeline import music as music_mod
+        sa = music_mod.workflow(app.config, "calm solo piano", 60, 7)
+        mm = music_mod.workflow(dict(app.config, MUSIC_ENGINE="minimax"), "calm solo piano", 60, 7)
+        check("음악 엔진: 기본 Stable Audio 워크플로, MUSIC_ENGINE=minimax면 MiniMax",
+              any(n["class_type"] == "EmptyLatentAudio" for n in sa.values())
+              and any(n["class_type"] == "MiniMaxMusic3TextEncode" for n in mm.values()))
 
         with app.app_context():
             round1 = db.session.get(VideoRound, rid)

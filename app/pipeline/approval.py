@@ -80,6 +80,9 @@ def save_clusters(round_obj, clusters, feedbacks, config):
             rank=c["rank"],
             contradicted_by_key=c["contradicted_by_key"],
             reoccurrence_count=c["reoccurrence_count"],
+            # AI 추천: 반대 의견이 없는 묶음은 '반영'으로 미리 골라 둔다 — 사람은 빼고 싶은 것만 끄고 반영을 한 번 누른다
+            # (2026-11-08 사용자: 사람의 결정은 공개·반영 두 번). 반대 의견이 있는 묶음은 사람이 정하게 '결정 전'으로 둔다.
+            status="pending" if c["contradicted_by_key"] else "approved",
         )
         db.session.add(row)
         db.session.flush()
@@ -182,6 +185,8 @@ def _next_music(round_obj, change):
         settings["enabled"] = True
     elif change == "off":
         settings["enabled"] = False
+    elif change == "reroll" and settings["uploaded"]:  # 제작자가 올린 곡은 의견으로 바꾸지 않는다
+        settings["enabled"] = True
     elif change == "reroll":  # 다른 곡: 시드를 바꾸고 곡 설명은 다시 제안받는다
         settings.update(enabled=True, seed=random.randint(1, 2**31 - 1), file="", key="", seconds=0.0, caption="")
     if not (settings["enabled"] or settings["caption"] or settings["file"]):

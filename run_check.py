@@ -20,23 +20,46 @@ def check(label, condition, detail=""):
         _failures.append(label)
 
 
-def run_round(client, app, sid, approve_top=4):
-    """현재 화를 prompt_built → prompt_updated까지 진행."""
+def run_round(client, app, sid, approve_top=4, expect_next="prompt_built"):
+    """현재 화를 prompt_built → prompt_updated까지 진행. 자동 진행·데모 프로젝트는 반영하면 다음 버전 제작까지 이어져
+    expect_next="video_ready"."""
     base = f"/session/{sid}"
-    for step, expected in [("generate", "video_ready"), ("upload", "uploaded"),
-                           ("collect", "feedback_collected"), ("filter", "feedback_classified")]:
+    for step, expected in [("generate", "video_ready"), ("upload", "uploaded")]:
         res = client.post(f"{base}/{step}")
         status = client.get(f"{base}/api/status").get_json()["status"]
         check(f"POST {step} → {expected}", res.status_code == 302 and status == expected, status)
 
-    res = client.post(f"{base}/comments", data={"comments": "manual comment"})
-    check("POST comments는 분류 이후 단계에서 거부", client.get(f"{base}/api/status").get_json()["status"]
-          == "feedback_classified")
-
-    res = client.post(f"{base}/cluster")
+    # 공개 뒤 화면이 부르는 자동 수집 — 누르지 않아도 분류 → 묶기까지 하고 검토 화면 주소를 돌려준다 (2026-11-08)
+    with app.app_context():
+        rid = db.session.get(PipelineSession, sid).current_round.id
+    auto = client.post(f"/api/rounds/{rid}/auto-collect").get_json()
     data = client.get(f"{base}/api/clusters").get_json()
-    check("POST cluster → pending_review", data["status"] == "pending_review", f"{len(data['clusters'])}개 클러스터")
-    check("클러스터 생성됨", len(data["clusters"]) > 0)
+    check("자동 수집 → 분류·묶기까지 → pending_review + 검토 화면 주소",
+          auto["state"] == "pending_review" and "/review" in auto.get("review_url", "") and len(data["clusters"]) > 0,
+          (auto, len(data["clusters"])))
+    again = client.post(f"/api/rounds/{rid}/auto-collect").get_json()
+    check("묶은 뒤에는 자동 수집이 돌지 않음 (결정을 지우지 않게)", again["state"] == "pending_review" and again["added"] == 0, again)
+    res = client.post(f"{base}/collect")
+    check("POST collect (새 댓글 없음) → 검토 단계 유지", client.get(f"{base}/api/status").get_json()["status"] == "pending_review")
+    check("AI 추천: 반대 의견이 없는 묶음은 '반영'으로 미리 골라 둠 (사람은 반영 한 번)",
+          all(c["status"] == ("pending" if c["contradicted_by_key"] else "approved") for c in data["clusters"]),
+          [(c["status"], bool(c["contradicted_by_key"])) for c in data["clusters"]][:5])
+    first = data["clusters"][0]["id"]
+    client.post(f"{base}/cluster/{first}/decision", data={"decision": "reject"})
+    client.post(f"{base}/collect")  # 같은 시뮬레이션 댓글 — 새 댓글이 없으면 묶음·결정을 지우지 않는다
+    data = client.get(f"{base}/api/clusters").get_json()
+    check("새 댓글 없이 다시 모으기 → 검토 결정 유지",
+          data["status"] == "pending_review" and any(c["id"] == first and c["status"] == "rejected" for c in data["clusters"]),
+          [(c["id"], c["status"]) for c in data["clusters"]][:3])
+    with app.app_context():
+        n_before = len(db.session.get(PipelineSession, sid).current_round.feedbacks)
+    res = client.post(f"{base}/comments", data={"comments": "1분 10초쯤 배경음악이 너무 커서 내레이션이 안 들려요"})
+    data = client.get(f"{base}/api/clusters").get_json()
+    with app.app_context():
+        n_after = len(db.session.get(PipelineSession, sid).current_round.feedbacks)
+    check("묶은 뒤 의견 추가 → 다시 분류·묶기 (결정은 새로)",
+          n_after == n_before + 1 and data["status"] == "pending_review" and len(data["clusters"]) > 0
+          and not any(c["status"] == "rejected" for c in data["clusters"]), (n_before, n_after, data["status"]))
     check("GET review", client.get(f"{base}/review").status_code == 200)
 
     for c in data["clusters"][:approve_top]:
@@ -49,7 +72,13 @@ def run_round(client, app, sid, approve_top=4):
 
     res = client.post(f"{base}/apply")
     status = client.get(f"{base}/api/status").get_json()["status"]
-    check("POST apply → 다음 버전 prompt_built", res.status_code == 302 and status == "prompt_built", status)
+    check(f"POST apply → 다음 버전 {expect_next}", res.status_code == 302 and status == expect_next, status)
+    with app.app_context():
+        rounds_before = len(db.session.get(PipelineSession, sid).rounds)
+    client.post(f"{base}/apply")  # 반영을 한 번 더 눌러도 (2026-11-07: 여러 번 눌러 2차가 3개) 다음 버전을 또 만들지 않음
+    with app.app_context():
+        rounds_after = len(db.session.get(PipelineSession, sid).rounds)
+    check("반영을 두 번 눌러도 다음 버전은 하나", rounds_after == rounds_before, (rounds_before, rounds_after))
     return data["clusters"]
 
 
@@ -275,7 +304,7 @@ def _scene_refine_checks(client, app):
     reply = {"text": answer, "source": "gemma4-26b", "reason": ""}
     seen = []
 
-    def fake_strong(system, user, config, max_tokens=1200, fallback_config=None):
+    def fake_strong(system, user, config, max_tokens=1200, fallback_config=None, in_job=False):
         seen.append(user)
         return reply["text"], reply["source"], reply["reason"]
 
@@ -369,7 +398,7 @@ def _feedback_revise_checks(app):
           video.startswith("A robotic arm lowers") and first.startswith("A red box rests")
           and loose == ("A cat runs on a beach at sunset.", "")
           and params["prompt"].startswith("A robotic arm lowers") and params["image_prompt"].startswith("A red box rests")
-          and params["image_prompt"].endswith("clean look"), (video, first, loose, params["image_prompt"]))
+          and "clean look" in params["image_prompt"], (video, first, loose, params["image_prompt"]))  # 끝에는 text_free 꼬리가 붙는다
     # 원래 묘사의 인물 생김새 지키기: 빠지면 한 번 더 묻고, 그래도 빠지면 사람 낱말 뒤에 되살린다 (옷 의견이면 안 지킴)
     orig = ("Bright lab, a young Korean woman with long black hair in a cream silk blouse stands beside a white robotic arm, "
             "eye-level medium shot")
@@ -456,6 +485,259 @@ def _logo_vector_checks(client, app, sid, base):
     check("로고 '마지막 장면에서만'도 몇 초 동안 나올지 정함 (끝에서 2초 → 8초부터, 비우면 마지막 장면 내내)",
           logo["last_sec"] == 2.0 and "gte(t,8.00)" in last2 and "gte(t,6.00)" in last_scene
           and "마지막 2초" in overlay.describe_logo(logo) and cleared["last_sec"] == 0.0, (logo, last2))
+    _end_card_logo_checks(client, app, sid, base)
+
+
+def _end_card_logo_checks(client, app, sid, base):
+    """엔딩 카드 로고 (2026-11-06 사용자: 로고를 넣으면 엔딩 카드에 맞게 들어가게).
+    상자 안에 비율을 지켜 맞추고, 흰 바탕은 가장자리와 이어진 부분만 투명하게, 카드에 넣기로 했으면 영상 위에는 겹쳐 얹지 않는다."""
+    import io
+    import tempfile as _tempfile
+
+    from PIL import Image, ImageDraw
+
+    from app.pipeline import overlay
+    from app.pipeline.video_generator.comfyui import rough_cut as rc
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        wide = Image.new("RGB", (1600, 300), "white")
+        d = ImageDraw.Draw(wide)
+        d.ellipse((40, 40, 260, 260), fill=(0, 70, 160))
+        d.ellipse((100, 100, 200, 200), fill="white")  # 로고 안쪽의 흰 부분 — 지우면 안 된다
+        d.rectangle((320, 110, 1540, 190), fill=(0, 70, 160))
+        src = f"{tmp}/wide.jpg"
+        wide.save(src, quality=95)
+        name, w, h = rc._card_logo(src, tmp, 480, 160)
+        with Image.open(f"{tmp}/{name}") as out:
+            corner, inner = out.getpixel((0, 0))[3], out.getpixel((int(out.width * 110 / 1500), out.height // 2))[3]  # 안쪽 흰 원 가운데 (여백을 잘라 낸 뒤 좌표)
+        check("엔딩 카드 로고: 가로로 긴 로고도 상자(480×160) 안에 비율대로 맞추고, 흰 바탕은 투명하게 하되 로고 안쪽 흰 부분은 남김",
+              w <= 480 and h <= 160 and (w == 480 or h == 160) and corner == 0 and inner == 255, (w, h, corner, inner))
+
+    client.post(f"{base}/decorate", data={"end_card_settings": "1", "end_card_enabled": "on", "end_card_logo": "on",
+                                          "end_card_seconds": "4", "end_card_text": "군산대학교"})
+    png = io.BytesIO()
+    Image.new("RGBA", (40, 40), (255, 200, 0, 255)).save(png, format="PNG")
+    res = client.post(f"{base}/decorate", data={"logo_settings": "1", "logo_file": (io.BytesIO(png.getvalue()), "logo.png")},
+                      content_type="multipart/form-data", follow_redirects=True)
+    with app.app_context():
+        session = db.session.get(PipelineSession, sid)
+        logo, card = overlay.load_logo(session), overlay.load_end_card(session)
+    check("엔딩 카드에 로고를 넣기로 했으면 로고를 올려도 영상 위(모서리)에는 켜지 않고 카드에만 넣음 (안내 문구)",
+          logo["file"] == "logo.png" and not logo["enabled"] and card["enabled"] and card["logo"]
+          and "엔딩 카드에 맞춰" in res.get_data(as_text=True), (logo, card))
+
+    # 타임라인 로고 막대 (2026-11-07 사용자): 엔딩 카드에만 로고여도 막대가 보이고(카드 구간),
+    # 앞 장면으로 늘리면 그 구간 영상 위 로고가 켜지고, 카드 안으로 줄이면 꺼진다. 미리보기 바탕은 엔딩 카드 화면
+    import json as _json
+    with app.app_context():
+        rnd = db.session.get(PipelineSession, sid).current_round
+        saved_tl = rnd.timeline_json
+        rnd.timeline_json = _json.dumps({"total": 20.0, "scenes": [{"id": "s01", "start": 0.0, "end": 14.0}],
+                                         "end_card": [14.0, 20.0], "cues": [], "logo": None, "last_start": 10.0})
+        db.session.commit()
+    from app.routes import session as routes
+
+    def bar():
+        with app.test_request_context():
+            sess = db.session.get(PipelineSession, sid)
+            return routes._timeline_view(sess.current_round, overlay.load_logo(sess), True)["logo"]
+    page = client.get(base).get_data(as_text=True)
+    card_bar = bar()
+    client.post(f"{base}/decorate", data={"timeline_settings": "1", "logo_start": "6", "logo_end": "20"})
+    with app.app_context():
+        into_scenes = overlay.load_logo(db.session.get(PipelineSession, sid))
+    scene_bar = bar()
+    client.post(f"{base}/decorate", data={"timeline_settings": "1", "logo_start": "15", "logo_end": "20"})
+    with app.app_context():
+        card_only = overlay.load_logo(db.session.get(PipelineSession, sid))
+        rnd = db.session.get(PipelineSession, sid).current_round
+        rnd.timeline_json = saved_tl
+        db.session.commit()
+    check("타임라인 로고 막대: 엔딩 카드에만 로고여도 카드 구간 막대 → 앞 장면까지 늘리면 그 구간 영상 위 로고 켜짐(장면 끝까지=0) "
+          "→ 카드 안으로 줄이면 꺼짐, 꾸미기에 '보이는 때' 선택 칸 없음",
+          card_bar == [14.0, 20.0] and 'id="logo-show"' not in page
+          and into_scenes["enabled"] and into_scenes["show"] == "range" and into_scenes["start_sec"] == 6.0
+          and into_scenes["end_sec"] == 0.0 and scene_bar == [6.0, 20.0] and not card_only["enabled"],
+          (card_bar, scene_bar, into_scenes["enabled"], card_only["enabled"]))
+    client.post(f"{base}/decorate", data={"end_card_settings": "1"})  # 엔딩 카드 끄기 (뒤 검증에 영향 없게)
+
+
+def _auto_motion_checks(app):
+    """자동 움직임 경로 (2026-11-06 사용자: 프리셋 없이 장면 묘사를 보고 자동으로). 26B 비전·ComfyUI는 가짜로 바꿔 끼운다."""
+    import contextlib
+    import json as _json
+    import tempfile as _tempfile
+
+    from PIL import Image
+
+    from app.pipeline import auto_motion as am
+    from app.pipeline import llm
+    from app.pipeline import storyboard_model as sbm
+
+    print("\n── 자동 움직임 경로 (auto_motion) ──")
+    W, H = 960, 576
+    named = am.parse_plan('```json {"kind": "move", "direction": "right", "object": "orange rover", "gripper": "", '
+                          '"anchors": ["orange traffic cones", "man"]} ```')
+    broken = am.parse_plan('{"kind": "pick", "direction": "none", "object": "red cube", "gripper": "gripper", "anchors": ["monitor", "man"')
+    check("1차 답(움직임 종류·방향·이름)을 읽고, JSON이 깨져도 이름은 건지며, 이상한 답은 '경로 없음'",
+          named == {"kind": "move", "direction": "right", "object": "orange rover", "gripper": "", "anchors": ["orange traffic cones", "man"]}
+          and broken["kind"] == "pick" and broken["object"] == "red cube" and "monitor" in broken["anchors"]
+          and am.parse_plan('{"kind": "typing", "object": "x"}') == {"kind": "none"} and am.parse_plan("") is None, (named, broken))
+    targets = {"object": "orange rover", "anchor1": "orange traffic cones", "anchor2": "man"}
+    boxes = am.parse_boxes('```json {"the orange rover": {"x_min": 200, "y_min": 600, "x_max": 470, "y_max": 900}, '
+                           '"anchor1": [{"x_min": 560, "y_min": 780, "x_max": 620, "y_max": 900}, '
+                           '{"x_min": 250, "y_min": 620, "x_max": 330, "y_max": 700}], '
+                           '"anchor2": {"x_min": 500, "y_min": 50, "x_max": 700, "y_max": 300}, "junk": {"x_min": 1}', targets, W, H)
+    check("2차 답: 이름 붙은 칸(x_min…)을 픽셀로 바꾸고, 키 대신 물체 이름을 써도 맞추며, 한 키의 상자 여러 개(고깔)도 모두 읽음",
+          boxes.get("object") == [(192.0, 345.6, 451.2, 518.4)] and len(boxes.get("anchor1", [])) == 2
+          and len(boxes.get("anchor2", [])) == 1 and "junk" not in boxes, boxes)
+    plan = {"kind": "move", "direction": "right", "object": boxes["object"][0],
+            "anchors": boxes["anchor1"] + boxes["anchor2"]}
+    tracks, direction = am.build_move(plan, W, H)
+    moving = [t for t in tracks if len(t) > 1]
+    still = [t[0] for t in tracks if len(t) == 1]
+    dx = moving[0][-1][0] - moving[0][0][0]
+    check("이동: 물체 위 점들이 같은 높이로 오른쪽으로 평행 이동(위로 휘면 '떠오름'), 거리는 화면 폭 40% 이하·화면 안, "
+          "지나가는 자리의 고정점은 빼고 나머지는 고정",
+          direction == "right" and len(moving) == 9 and all(abs(p[1] - t[0][1]) < 1e-6 for t in moving for p in t)
+          and 0 < dx <= 0.4 * W and max(p[0] for t in moving for p in t) <= W * 0.96
+          and not any(abs(p[0] - 566.4) < 0.01 and abs(p[1] - 483.84) < 0.01 for p in still)  # 차가 지나가는 고깔 → 뺌
+          and any(abs(p[0] - 576.0) < 0.01 and abs(p[1] - 100.8) < 0.01 for p in still), (dx, still))  # 뒤쪽 모니터 → 고정
+    check("이동: 방향을 모르면 앞이 더 비어 있는 쪽, 움직일 공간이 없으면 경로를 만들지 않음",
+          am.build_move(dict(plan, direction="none"), W, H)[1] == "right"
+          and am.build_move(dict(plan, direction="left", object=(20.0, 300.0, 300.0, 500.0)), W, H) is None)
+    pick = {"kind": "pick", "object": (503.0, 513.0, 527.0, 537.0), "gripper": (470.0, 300.0, 540.0, 380.0), "anchors": []}
+    ptracks, _d = am.build_pick(pick, W, H)
+    tip_l, obj_c = ptracks[0], ptracks[4]
+    mid = am.POINTS // 2 - 2
+    check("집기: 손가락 끝이 내려가 물체 양옆까지 닫히고, 물체는 그때까지 가만히 있다가 함께 올라감 (팔 관절은 찍지 않음)",
+          len([t for t in ptracks if len(t) > 1]) == 7 and obj_c[mid] == obj_c[0] and obj_c[-1][1] < obj_c[0][1] - 50
+          and abs(tip_l[mid][0] - 503.0) < 2 and tip_l[mid][1] > 500, (tip_l[mid], obj_c[-1]))
+    check("집기: 집게가 물체보다 좁거나 집게를 못 찾으면 경로를 만들지 않음",
+          am.build_pick(dict(pick, gripper=(500.0, 300.0, 525.0, 380.0)), W, H) is None
+          and am.build_pick(dict(pick, gripper=None), W, H) is None)
+    fingers = am.build_pick(dict(pick, gripper=(400.0, 230.0, 560.0, 380.0), finger_r=(470.0, 330.0, 492.0, 384.0),
+                                 finger_l=(520.0, 320.0, 540.0, 376.0)), W, H)[0]
+    check("집기: 손가락을 따로 찾았으면 각 손가락 상자의 아래 가운데를 손가락 끝으로 씀 (집게 상자는 손목까지 넓게 잡혔다), 좌우가 바뀌어도 바로잡음",
+          fingers[0][0] == (481.0, 384.0) and fingers[1][0] == (530.0, 376.0), (fingers[0][0], fingers[1][0]))
+
+    with _tempfile.TemporaryDirectory() as tmp:
+        img, img2 = f"{tmp}/v1.png", f"{tmp}/v2.png"
+        Image.new("RGB", (W, H), (40, 40, 40)).save(img)
+        Image.new("RGB", (W, H), (60, 60, 60)).save(img2)
+        board = {"style": "Cinematic", "negative": "", "defaults": {"width": W, "height": H, "fps": 24, "seed": 42},
+                 "shots": [{"id": "s01", "prompt": "An orange rover drives from left to right between cones.", "duration": 3.0},
+                           {"id": "s02", "prompt": "A student types on a keyboard.", "duration": 3.0},
+                           {"id": "s03", "prompt": "A rover drives right.", "duration": 3.0,
+                            "motion": {"width": W, "height": H, "image": img, "tracks": [[[1, 1], [5, 5]]]}}]}
+        answers = {"An orange rover": '{"kind": "move", "direction": "right", "object": "orange rover", "anchors": []}',
+                   "A student": '{"kind": "none"}'}
+        box_answer = '{"object": {"x_min": 200, "y_min": 600, "x_max": 470, "y_max": 900}}'
+
+        class _Adapter:
+            problem = ""
+
+            def motion_problem(self):
+                return self.problem
+
+        old = (am.ask, am.ask_boxes, llm.vision_ready, llm.strong_server)
+        am.ask = lambda path, desc, cfg: next((v for k, v in answers.items() if desc.startswith(k)), None)
+        am.ask_boxes = lambda path, targets, cfg: box_answer
+        llm.vision_ready = lambda cfg: True
+        llm.strong_server = lambda cfg, in_job=False: contextlib.nullcontext()
+        try:
+            notes = []
+            done = am.prepare(None, board, {"s01": img, "s02": img, "s03": img}, app.config, _Adapter(), note=notes.append)
+            s01, s02, s03 = board["shots"]
+            params = sbm.resolve_params(board, {**s01, "image": img}, app.config)
+            check("자동 진행: 차가 움직이는 장면에만 경로를 붙이고(auto 표시·컷 1개), 타이핑 장면은 그대로, 사람이 준 경로는 건드리지 않음",
+                  done == ["s01"] and s01["motion"]["auto"] == {"kind": "move", "direction": "right"}
+                  and s01["motion"]["takes"] == 1 and "motion" not in s02 and "auto" not in s03["motion"]
+                  and any("s01" in n for n in notes), (done, s02.get("motion"), notes))
+            check("자동 경로가 붙은 장면은 움직임 경로 워크플로(ltx25_motion)로 만든다",
+                  params["workflow"] == app.config.get("COMFYUI_WORKFLOW_MOTION", "ltx25_motion") and params["tracks"], params["workflow"])
+            first = _json.dumps(s01["motion"])
+            again = am.prepare(None, board, {"s01": img}, app.config, _Adapter())
+            answers["An orange rover"] = '{"kind": "none"}'
+            redrawn = am.prepare(None, board, {"s01": img2}, app.config, _Adapter())
+            check("같은 첫 프레임이면 다시 계산하지 않고, 첫 프레임이 바뀌어 경로가 필요 없어지면 예전 자동 경로를 지움",
+                  again == [] and _json.dumps(board["shots"][0].get("motion", {})) != first and redrawn == []
+                  and "motion" not in board["shots"][0], board["shots"][0].get("motion"))
+            answers["An orange rover"] = '{"kind": "move", "direction": "right", "object": "orange rover", "anchors": []}'
+            blocked = _Adapter()
+            blocked.problem = "ComfyUI-LTXVideo 노드가 없습니다"
+            llm.vision_ready = lambda cfg: False
+            no_vision = am.prepare(None, board, {"s01": img}, app.config, _Adapter())
+            llm.vision_ready = lambda cfg: True
+            check("26B 비전이나 Motion Control 노드가 없으면 경로 없이 그냥 만든다 (멈추지 않음)",
+                  no_vision == [] and am.prepare(None, board, {"s01": img}, app.config, blocked) == []
+                  and "motion" not in board["shots"][0])
+        finally:
+            am.ask, am.ask_boxes, llm.vision_ready, llm.strong_server = old
+
+    # 자동 진행: 첫 프레임 점검으로 26B를 켰을 때 자동 경로도 같이 계산 (26B를 또 켜지 않게, 2026-11-06 사용자)
+    from types import SimpleNamespace
+
+    from app.pipeline import auto_pipeline as ap
+    from app.pipeline import video_generator as vg
+
+    events = []
+
+    @contextlib.contextmanager
+    def _server(cfg, in_job=False):
+        events.append("on")
+        yield
+        events.append("off")
+
+    old2 = (llm.strong_server, llm.vision_ready, ap._review_shots, ap._renders, am.prepare, vg.resolve_local_adapter)
+    llm.strong_server, llm.vision_ready = _server, (lambda cfg: True)
+    ap._review_shots = lambda app_, r, sb, kind, failing: events.append(f"review:{kind}") or failing.append(("s02", {}))
+    ap._renders = lambda r, sid: [SimpleNamespace(selected=True, image_path=f"/img/{sid}.png")]
+    am.prepare = lambda r, sb, images, cfg, adapter, note=None: events.append(("motion", sorted(images))) or []
+    vg.resolve_local_adapter = lambda cfg: (object(), "")
+    try:
+        board = {"shots": [{"id": "s01"}, {"id": "s02"}, {"id": "s03"}]}
+        from app.pipeline import orchestrator as orch
+        old_sb = orch.ensure_storyboard
+        orch.ensure_storyboard = lambda r, cfg: board
+        try:
+            with app.app_context():
+                ap._review_pass(app, SimpleNamespace(id=0), "image")
+                events.append("|")
+                ap._review_pass(app, SimpleNamespace(id=0), "clip")
+        finally:
+            orch.ensure_storyboard = old_sb
+        check("자동 진행: 첫 프레임 점검과 같은 26B 켜기 안에서 통과한 장면(s01·s03)의 자동 경로를 계산, 컷 점검 때는 계산하지 않음",
+              events == ["on", "review:image", ("motion", ["s01", "s03"]), "off", "|", "on", "review:clip", "off"], events)
+    finally:
+        llm.strong_server, llm.vision_ready, ap._review_shots, ap._renders, am.prepare, vg.resolve_local_adapter = old2
+
+
+def _affected_shot_timeline_checks(app):
+    """댓글 시각 → 장면은 시청자가 본 영상의 실제 구간(timeline_json)으로 (2026-11-06: 기획 길이로 계산해 한 장면씩 밀림)."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from app.pipeline import orchestrator
+
+    board = {"shots": [{"id": f"s0{i}", "duration": d} for i, d in enumerate((5, 5, 5, 3, 3, 3), start=1)]}
+    timeline = {"scenes": [{"id": "s01", "start": 0, "end": 4.39}, {"id": "s02", "start": 4.39, "end": 8.78},
+                           {"id": "s03", "start": 8.78, "end": 13.17}, {"id": "s04", "start": 13.17, "end": 15.56},
+                           {"id": "s05", "start": 15.56, "end": 17.95}, {"id": "s06", "start": 17.95, "end": 20.34}],
+                "end_card": [20.34, 26.34]}
+
+    def cluster(*secs):
+        return SimpleNamespace(feedbacks=[SimpleNamespace(timestamp_sec=s) for s in secs], topic_category="technical",
+                               representative_text="", affected_shots_json=None)
+
+    car, grip = cluster(14.0), cluster(16.0, 17.0)
+    orchestrator.assign_affected_shots(SimpleNamespace(clusters=[car, grip], timeline_json=_json.dumps(timeline)), board, app.config)
+    old_car = cluster(14.0)
+    orchestrator.assign_affected_shots(SimpleNamespace(clusters=[old_car], timeline_json=""), board, app.config)
+    check("댓글 시각 → 장면: 실제 합성 타임라인 기준 (0:14 → s04, 0:16·0:17 → s05), 타임라인이 없으면 기획 길이로",
+          _json.loads(car.affected_shots_json) == ["s04"] and _json.loads(grip.affected_shots_json) == ["s05"]
+          and _json.loads(old_car.affected_shots_json) == ["s03"],
+          (car.affected_shots_json, grip.affected_shots_json, old_car.affected_shots_json))
 
 
 def _demo_replay_checks(client, app):
@@ -483,7 +765,11 @@ def _demo_replay_checks(client, app):
         src.video_path, src.status = video, "video_ready"
         for n, sid in enumerate(("s01", "s02")):
             db.session.add(ShotRender(round_id=src.id, shot_id=sid, version=3, status="done", selected=True,
-                                      path=os.path.join(folder, f"{sid}.mp4"), duration=3.0 + n, provider="comfyui"))
+                                      path=os.path.join(folder, f"{sid}.mp4"), duration=3.0 + n, provider="comfyui",
+                                      review_json=_json.dumps({"image": {"checked": True, "passed": True, "score": 9.0,
+                                                                         "problems": []}})))
+        src.auto_json = _json.dumps({"phase": "done", "flagged": ["s02"],
+                                     "log": [{"at": "00:00:00", "text": "준비된 점검 기록"}]}, ensure_ascii=False)
         db.session.commit()
         src_id = src.id
 
@@ -491,21 +777,26 @@ def _demo_replay_checks(client, app):
     with app.app_context():
         db.session.get(PipelineSession, demo_sid).demo_json = _json.dumps({"replay_round_id": src_id})
         db.session.commit()
-    run_round(client, app, demo_sid)  # 1차: 평소처럼 (데모 재생은 2차부터)
-    client.post(f"/session/{demo_sid}/generate")
+    run_round(client, app, demo_sid, expect_next="video_ready")  # 1차: 평소처럼 — 반영하면 2차는 데모 재생으로 바로 ③
+    client.post(f"/session/{demo_sid}/generate")  # 이미 ③이라 아무 일도 하지 않는다
     with app.app_context():
         rnd = db.session.get(PipelineSession, demo_sid).current_round
         renders = {r.shot_id: (r.status, r.selected, r.duration) for r in rnd.shot_renders}
         state, number, path, text = rnd.status, rnd.round_number, rnd.video_path, rnd.prompt_text
         jobs_made = len(GenerationJobModel.query.filter_by(round_id=rnd.id).all())
         notes = [v.note for v in db.session.get(PipelineSession, demo_sid).versions]
-    check("데모 재생: 2차 '제작 시작' → 만들지 않고 준비된 결과로 ③ (장면·영상·자막 복사, 진행 표시용 작업 1건)",
+        reviews = {r.shot_id: r.review.get("image", {}).get("score") for r in rnd.shot_renders}
+        auto = rnd.auto_data
+    check("데모 재생: 반영하면 2차 제작을 바로 시작 → 만들지 않고 준비된 결과로 ③ (장면·영상·자막 복사, 진행 표시용 작업 1건)",
           number == 2 and state == "video_ready" and jobs_made == 1
           and renders == {"s01": ("done", True, 3.0), "s02": ("done", True, 4.0)}
           and path and os.path.exists(path) and path != video
           and os.path.exists(os.path.join(os.path.dirname(path), "subtitles.srt"))
           and "A car turns a corner" in text and "An old shot two" not in text and "장면 구성 갱신" in notes,
           (state, renders, notes[-2:]))
+    check("데모 재생: 준비된 결과의 AI 점검 기록(장면별 점수·미달 장면·진행 기록)도 복사 → ③ 'AI 점검 결과'에 보임",
+          reviews == {"s01": 9.0, "s02": 9.0} and auto.get("flagged") == ["s02"] and auto.get("phase") == "done"
+          and any(e.get("text") == "준비된 점검 기록" for e in auto.get("log") or []), (reviews, auto))
 
     # 차수별 설정: 1차도 바로 만들고, 'YouTube에 올리기'는 이미 올린 영상(댓글이 달린)에 연결
     first_sid = make("데모 처음부터", "An old shot one\\nAn old shot two")
@@ -587,16 +878,17 @@ def main():
         "OLLAMA_MODEL": "",
         "REFINE_LLM_URL": "",  # 큰 모델(llama-server)을 켜지 않게 — 장면 다듬기 검증은 함수를 바꿔 끼운다
         "LLM_COMFY_ENABLED": False,  # 켜져 있는 ComfyUI의 Gemma를 부르지 않게 (결과가 매번 달라진다)
-        "BGM_AUTO": False,  # 배경음악 곡 생성(ComfyUI MiniMax)을 부르지 않게
+        "BGM_AUTO": False,  # 배경음악 곡 생성(ComfyUI 음악 모델)을 부르지 않게
         "DEMO_REPLAY_SEC_PER_SHOT": 0,  # 데모 재생의 '만드는 중' 표시를 기다리지 않게
+        "COMFYUI_URL": "http://127.0.0.1:9",  # 실제 ComfyUI(/interrupt·/free)에 닿지 않게 — 2026-11-06 실제 생성이 끊겼다
     })
     client = app.test_client()
 
     check("GET /", client.get("/").status_code == 200)
     check("GET create", client.get("/session/create").status_code == 200)
     home = client.get("/").get_data(as_text=True)
-    check("첫 화면: 가운데 입력창 → 세부사항 화면, 로그인 버튼 없음",
-          'id="ask-form"' in home and 'action="/session/create"' in home and 'id="google-login"' not in home
+    check("첫 화면: 가운데 입력창 → AI에게 맡기기 화면, 로그인 버튼 없음",
+          'id="ask-form"' in home and 'action="/session/new"' in home and 'id="google-login"' not in home
           and 'class="app-side"' not in home)  # 첫 화면은 입력창만 — 왼쪽 대시보드 없음
     check("GET /projects (내 프로젝트 목록)", client.get("/projects").status_code == 200)
     dash = client.get("/projects").get_data(as_text=True)
@@ -691,11 +983,22 @@ def main():
     _scene_refine_checks(client, app)
     _feedback_revise_checks(app)
     _plan_change_checks(client, app)
+    _auto_motion_checks(app)
+    _affected_shot_timeline_checks(app)
     _demo_replay_checks(client, app)
 
     from tests import video_checks
 
     video_checks.run(check)
+
+    from tests import auto_checks  # AI 자동 진행 (질문 → 기획 → 생성·점검 → ③ 확인)
+    from app.pipeline.video_generator.comfyui import rough_cut as _rc
+
+    _ffmpeg = _rc.resolve_ffmpeg({"FFMPEG_PATH": os.getenv("FFMPEG_PATH", "")})
+    if _ffmpeg and os.path.isdir(video_checks.WORKFLOWS_DIR):
+        auto_checks.run(check, video_checks._app, _ffmpeg, video_checks.WORKFLOWS_DIR)
+    else:
+        check("AI 자동 진행 검증에 필요한 ffmpeg·워크플로", False, f"ffmpeg={_ffmpeg}")
 
     print(f"\n{'모든 검증 통과' if not _failures else f'실패 {len(_failures)}건: ' + ', '.join(_failures)}")
     return 1 if _failures else 0

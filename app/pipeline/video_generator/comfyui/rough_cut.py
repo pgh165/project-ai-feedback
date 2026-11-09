@@ -133,6 +133,90 @@ def _filter_path(path):
     return str(path).replace("\\", "/").replace(":", "\\:")
 
 
+END_CARD_ID = "end_card"
+
+
+def _card_logo(logo_file, work, box_w, box_h):
+    """엔딩 카드용 로고 PNG — 둘레의 빈 여백을 잘라 내고, 상자(box_w×box_h) 안에 비율을 지켜 맞춘다.
+    투명 배경이 없는 로고(흰 바탕 JPG 등)는 가장자리에 이어진 바탕색만 투명하게 만든다 — 카드 배경색 위에 흰 사각형이 뜨지 않게.
+    반환 (파일 이름, 너비, 높이). [오픈소스] Pillow"""
+    from PIL import Image, ImageChops, ImageDraw
+
+    with Image.open(logo_file) as src:
+        img = src.convert("RGBA")
+    alpha = img.getchannel("A")
+    if alpha.getextrema()[0] == 255:  # 완전히 불투명 → 가장자리와 이어진 바탕색만 지운다 (로고 안쪽의 같은 색은 남김)
+        rgb = img.convert("RGB")
+        w, h = rgb.size
+        corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+        if max(max(c) - min(c) for c in zip(*corners)) <= 24:  # 네 귀퉁이가 거의 같은 색일 때만 '바탕'으로 본다
+            marker = (255, 0, 255)
+            filled = rgb.copy()
+            for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+                if filled.getpixel(p) != marker:
+                    ImageDraw.floodfill(filled, p, marker, thresh=40)
+            diff = ImageChops.difference(filled, Image.new("RGB", (w, h), marker)).convert("L")
+            img.putalpha(diff.point(lambda v: 255 if v > 0 else 0))
+    bbox = img.getchannel("A").getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    scale = min(box_w / img.width, box_h / img.height)
+    size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+    img = img.resize(size, Image.LANCZOS)
+    name = "endcard_logo.png"
+    img.save(Path(work) / name)
+    return name, size[0], size[1]
+
+
+def _end_card_clip(ffmpeg, out, width, height, fps, card, logo_file=None, font=None):
+    """엔딩 카드 영상 — 배경색 위에 로고(있으면)와 문구, 검은 화면에서 서서히 나타난다. 소리는 무음 트랙.
+    로고는 상자 안에 비율을 지켜 맞추고(가로로 긴 로고도 넘치지 않게), 로고+문구를 한 묶음으로 화면 가운데에 둔다.
+    [오픈소스] ffmpeg color·overlay·drawtext·fade 필터. 글자는 편집에서 넣는다 (AI가 그리지 않음)."""
+    out = Path(out)
+    work = out.parent
+    sec = float(card["seconds"])
+    lines = [l for l in (card.get("text") or "").splitlines() if l.strip()]
+    color = card["color"].replace("#", "0x")
+    cmd = [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c={color}:s={width}x{height}:r={fps}:d={sec:.3f}",
+           "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    chain, label = [], "[0:v]"
+    has_logo = bool(card.get("logo") and logo_file and Path(logo_file).exists())
+    has_text = bool(lines and font)
+    # 글자 크기는 화면의 짧은 쪽 기준 (세로 영상에서 높이 기준이면 줄이 화면 밖으로 넘쳤다),
+    # 긴 줄은 화면 폭의 90% 안에 들도록 줄인다 (한글 한 글자 폭 ≈ 글자 크기)
+    short = min(width, height)
+    sizes = [min(int(short * (0.07 if k == len(lines) - 1 else 0.045)), int(width * 0.9 / max(len(line), 1)))
+             for k, line in enumerate(lines)] if has_text else []
+    gap = int(short * 0.025)
+    block = sum(sizes) + gap * (len(sizes) - 1) if sizes else 0
+    logo_h = 0
+    if has_logo:
+        box_w = int(width * (0.7 if height > width else 0.5))
+        box_h = int(height * (0.3 if has_text else 0.4))
+        name, _logo_w, logo_h = _card_logo(logo_file, work, box_w, box_h)
+        cmd += ["-loop", "1", "-i", name]
+    logo_gap = int(height * 0.06) if has_logo and has_text else 0
+    top = (height - (logo_h + logo_gap + block)) // 2  # 로고 + 간격 + 문구 묶음을 세로 가운데에
+    if has_logo:
+        chain.append("[2:v]format=rgba[lg]")
+        chain.append(f"{label}[lg]overlay=x=(W-w)/2:y={top}:shortest=1[v1]")
+        label = "[v1]"
+    if has_text:
+        y = top + logo_h + logo_gap
+        for k, (line, size) in enumerate(zip(lines, sizes)):
+            txt = work / f"endcard_line{k}.txt"
+            txt.write_text(line, encoding="utf-8")
+            chain.append(f"{label}drawtext=fontfile='{_filter_path(font)}':textfile='{txt.name}':"
+                         f"fontcolor={card['text_color'].replace('#', '0x')}:fontsize={size}:x=(w-text_w)/2:y={y}[t{k}]")
+            label = f"[t{k}]"
+            y += size + gap
+    chain.append(f"{label}fade=t=in:st=0:d=0.6,format=yuv420p[vout]")
+    cmd += ["-filter_complex", ";".join(chain), "-map", "[vout]", "-map", "1:a", "-t", f"{sec:.3f}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-c:a", "aac", "-ar", "48000", "-ac", "2", out.name]
+    subprocess.run(cmd, check=True, capture_output=True, cwd=str(work))
+    return out
+
+
 
 def _xfade_join(ffmpeg, normed, lengths, overlap, out):
     """디졸브: 장면을 overlap초씩 겹쳐 이어 붙인다 (영상 xfade + 소리 acrossfade)."""
@@ -202,7 +286,7 @@ def _mix_with_music(ffmpeg, joined, narration_track, music, out_path, total, sou
 
 def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narration=None,
           narration_options=None, report=None, edit=None, subtitles=None, logo=None, logo_file=None, music=None,
-          trims=None):
+          trims=None, end_card=None, end_card_font=None, end_card_logo=None):
     """clips: [(shot_id, Path)] 순서대로 이어 붙인다. 결과 Path 반환, 클립이 없으면 None.
 
     narration: {shot_id: {"path": wav}} 가 있으면 내레이션을 효과음 위에 얹는다.
@@ -212,7 +296,9 @@ def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narratio
     subtitles: {shot_id: 자막 문장} — edit["subtitles"]면 영상에 굽지 않고 out_path 옆 subtitles.srt(YouTube 자막)로 쓴다.
     logo / logo_file: 로고 설정(pipeline/overlay.py)과 이미지 파일 — 있으면 위에 얹는다.
     music: {"path", "volume"} 배경음악 한 곡 (pipeline/bgm.py) — 내레이션이 나오면 낮아진다.
-    trims: {shot_id: (앞, 뒤)} 초 — AI가 만든 컷의 시작 멈칫·끝 느려짐을 잘라 낸다 (불러온 원본 장면에는 주지 않는다)."""
+    trims: {shot_id: (앞, 뒤)} 초 — AI가 만든 컷의 시작 멈칫·끝 느려짐을 잘라 낸다 (불러온 원본 장면에는 주지 않는다).
+    end_card: 엔딩 카드 설정(overlay.normalize_end_card) — 켜져 있으면 마지막 장면을 fade_sec초 동안 검게 사라지게 하고
+      카드(배경색 + 로고 + 문구)를 이어 붙인다. narration이면 마지막 장면의 내레이션·자막을 카드 위로 옮긴다."""
     from ... import edit_plan, overlay  # 순환 import 방지
 
     if not clips:
@@ -229,6 +315,15 @@ def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narratio
     if plan["subtitles"] and not texts:
         report["edit_note"] = "자막으로 올릴 문장이 없습니다 ([내레이션]을 적어 주세요)"
     fade_half = plan["transition_sec"] / 2 if plan["transition"] == "fade" else 0.0
+    card = overlay.normalize_end_card(end_card) if end_card else None
+    card = card if card and card["enabled"] else None
+    last_sid = clips[-1][0]
+    if card and card["narration"]:  # 마지막 장면의 내레이션·자막을 카드 위로 (상용 영상처럼 학과명을 카드에서 읽는다)
+        if narration and last_sid in narration:
+            narration = {**narration, END_CARD_ID: narration[last_sid]}
+            narration.pop(last_sid)
+        if last_sid in texts:
+            texts[END_CARD_ID] = texts.pop(last_sid)
 
     normed, lengths = [], []
     for index, (shot_id, clip) in enumerate(clips):
@@ -261,6 +356,10 @@ def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narratio
                 start = max(out_len - fade_half, 0)
                 vf += f",fade=t=out:st={start:.3f}:d={fade_half:.3f}"
                 af.append(f"afade=t=out:st={start:.3f}:d={fade_half:.3f}")
+        if card and card["fade_sec"] and out_len and index == len(clips) - 1:  # 끝 페이드아웃 (검은 화면으로)
+            fade = min(card["fade_sec"], out_len * 0.6)
+            vf += f",fade=t=out:st={max(out_len - fade, 0):.3f}:d={fade:.3f}"
+            af.append(f"afade=t=out:st={max(out_len - fade, 0):.3f}:d={fade:.3f}")
 
         dest = norm_dir / f"{shot_id}_{Path(clip).stem}.mp4"
         # 모든 조각이 같은 스트림 구성(영상+오디오)이어야 concat -c copy가 깨지지 않는다
@@ -285,6 +384,12 @@ def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narratio
         made = probe_media(ffmpeg, dest)
         lengths.append(made["duration"] if made else (out_len or 0.0))
 
+    if card:
+        card_path = _end_card_clip(ffmpeg, norm_dir / "end_card.mp4", width, height, fps, card,
+                                   logo_file=end_card_logo or logo_file, font=end_card_font)
+        normed.append((END_CARD_ID, card_path))
+        made = probe_media(ffmpeg, card_path)
+        lengths.append(made["duration"] if made else card["seconds"])
     overlap = edit_plan.overlap_sec(plan, lengths)
     joined = norm_dir / "joined.mp4"
     if overlap > 0:
@@ -328,15 +433,20 @@ def build(ffmpeg, clips, out_path, width, height, fps, label_font=None, narratio
         srt.unlink()
     # ③ 타임라인 편집기가 그리는 시간표 (장면·자막·로고) — 여기서 실제로 쓴 값 그대로
     norm_logo = overlay.normalize_logo(logo)
+    # 로고 얹기는 장면 구간에만 — 엔딩 카드에는 카드 자체의 로고가 있다 (겹쳐 두 개가 되지 않게)
+    scenes_end = starts[-1] if card else total
+    last_start = starts[-2] if card and len(starts) > 1 else starts[-1]
     report["timeline"] = {
         "total": round(total, 2),
-        "scenes": [{"id": sid, "start": round(starts[n], 2), "end": round(ends[n], 2)} for n, (sid, _p) in enumerate(normed)],
+        "scenes": [{"id": sid, "start": round(starts[n], 2), "end": round(ends[n], 2)}
+                   for n, (sid, _p) in enumerate(normed) if sid != END_CARD_ID],
+        "end_card": [round(starts[-1], 2), round(total, 2)] if card else None,
         "cues": tagged,
-        "logo": list(overlay.logo_range(norm_logo, total, starts[-1])) if logo_file else None,
-        "last_start": round(starts[-1], 2)}
+        "logo": list(overlay.logo_range(norm_logo, scenes_end, last_start)) if logo_file else None,
+        "last_start": round(last_start, 2)}
     if logo_file:
         decorated = norm_dir / "decorated.mp4"
-        _decorate(ffmpeg, joined, decorated, norm_dir, width, height, norm_logo, logo_file, total, starts[-1])
+        _decorate(ffmpeg, joined, decorated, norm_dir, width, height, norm_logo, logo_file, scenes_end, last_start)
         joined = decorated
 
     sound_gain = plan["sound_gain"]

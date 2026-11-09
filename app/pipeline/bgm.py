@@ -1,4 +1,4 @@
-"""[팀 직접 구현] 배경음악 — 영상 전체 분위기에 맞춘 연주곡 한 곡 (MiniMax Music 3, pipeline/music.py).
+"""[팀 직접 구현] 배경음악 — 영상 전체 분위기에 맞춘 연주곡 한 곡 (기본 Stable Audio 3 Medium, pipeline/music.py).
 
 장면별 효과음은 어색해서 쓰지 않는다. 소리는 장면 소리(LTX) + 내레이션(TTS) + 배경음악 한 곡이다.
 
@@ -7,7 +7,8 @@
   곡 파일           (설명·길이·시드)가 같으면 다시 만들지 않는다. 다음 버전에도 그대로 이어지고,
                     '다른 곡으로'(피드백 또는 버튼)일 때만 시드를 바꿔 새로 만든다.
   섞기              rough_cut.build — 내레이션이 나오면 음악을 낮추고(sidechaincompress), 처음·끝은 페이드.
-설정은 VideoRound.music_json에 둔다. 라이선스: MiniMax-Music3 Community License — 상업 이용 시 'MiniMax-Music3' 표기.
+  사용자 곡          음악 파일을 올리면(uploaded) 만들지 않고 그 곡을 처음부터 쓴다 (2026-11-05 사용자 결정: 파일이 없을 때만 만든다).
+설정은 VideoRound.music_json에 둔다. 라이선스 표기는 엔진마다 다르다(music.CREDITS) — 만든 곡일 때만 YouTube 설명에 붙인다.
 """
 import copy
 import hashlib
@@ -18,27 +19,28 @@ import subprocess
 from pathlib import Path
 
 DEFAULTS = {"enabled": False, "caption": "", "seed": 0, "volume": 0.5, "file": "", "key": "", "seconds": 0.0,
-            "offset": 0.0}  # offset: 곡에서 쓰기 시작하는 지점(초) — 소리 크기가 고른 구간
-CREDIT = "배경음악: MiniMax-Music3로 생성"
+            "offset": 0.0, "uploaded": ""}  # offset: 곡에서 쓰기 시작하는 지점(초) — 소리 크기가 고른 구간
+MUSIC_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}  # 사용자가 올릴 수 있는 음악 파일
 
 _SYSTEM = (
     "You write prompts for an instrumental background-music generator. Given a short video's type, description and "
     "visual style, write ONE English music description of 20-40 words: genre, mood, tempo (BPM), main instruments, "
     "and how it builds. It must be background music under a voice-over: steady, not busy, no vocals, no lyrics, "
-    "no sound effects. Output only the description."
+    "no sound effects. Prefer ONE solo instrument (solo piano unless the video clearly needs another), slow and calm. "
+    "Output only the description."
 )
 _TEMPLATES = [  # LLM이 없을 때: 영상 종류 키워드 → 곡 설명
     (r"홍보|소개|학과|학교|대학|기업|회사|제품|기술|tech|promo",
-     "modern uplifting corporate tech background music, 110 BPM, soft electronic pulses, warm synth pads, light "
-     "piano, clean steady beat that builds gently, optimistic and confident, instrumental, no vocals"),
+     "calm solo piano background music, 80 BPM, gentle warm melody, soft sustained chords, steady and hopeful, "
+     "instrumental, no vocals"),  # 2026-11-05 사용자: 피아노 한 대로 느리고 잔잔한 곡이 좋다
     (r"뮤직비디오|music", "cinematic modern pop instrumental, 100 BPM, punchy drums, bright synths, emotional build, no vocals"),
     (r"단편|드라마|영화|이야기|short film",
      "cinematic emotional underscore, 80 BPM, soft strings, ambient piano, slow swells, gentle and reflective, no vocals"),
     (r"요리|여행|일상|브이로그|vlog",
      "light acoustic background music, 105 BPM, ukulele, soft claps, warm and cheerful, no vocals"),
 ]
-_DEFAULT_CAPTION = ("calm modern background music, 100 BPM, soft synth pads, light piano, gentle steady rhythm, "
-                    "warm and positive, instrumental, no vocals")
+_DEFAULT_CAPTION = ("calm solo piano background music, 80 BPM, gentle warm melody, soft sustained chords, "
+                    "steady and peaceful, instrumental, no vocals")
 
 
 def normalize(data):
@@ -48,6 +50,7 @@ def normalize(data):
     out["caption"] = " ".join(str(src.get("caption") or "").split())[:500]
     out["file"] = str(src.get("file") or "")
     out["key"] = str(src.get("key") or "")
+    out["uploaded"] = str(src.get("uploaded") or "")
     for key in ("seconds", "offset"):
         try:
             out[key] = round(max(float(src.get(key) or 0.0), 0.0), 2)
@@ -112,8 +115,14 @@ def suggest_caption(prompt_text, config, seconds=None, allow_llm=True):
     return text, source
 
 
-def track_key(caption, seed):
-    raw = f"{caption}|{int(seed)}"
+def credit(config):
+    """만든 곡의 라이선스 표기 (엔진별)."""
+    from . import music
+    return music.CREDITS[music.engine(config)]
+
+
+def track_key(caption, seed, engine="stable_audio"):
+    raw = f"{caption}|{int(seed)}" if engine == "minimax" else f"{engine}|{caption}|{int(seed)}"  # 엔진을 바꾸면 새로 만든다
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
@@ -123,12 +132,18 @@ def ensure_track(config, settings, seconds, out_dir, progress=None):
     from . import music
 
     settings = normalize(settings)
+    if settings["uploaded"]:  # 사용자가 올린 곡: 만들지 않고 처음부터 쓴다
+        if not Path(settings["uploaded"]).exists():
+            raise RuntimeError("올린 음악 파일을 찾지 못했습니다.")
+        out = Path(settings["uploaded"])
+        settings.update(file=str(out), key="upload", offset=0.0)
+        return out, settings
     if not settings["caption"]:
         raise RuntimeError("배경음악 설명이 비어 있습니다.")
     if not settings["seed"]:
         settings["seed"] = random.randint(1, 2**31 - 1)
     seconds = max(8.0, float(seconds) + 1.5)  # 끝 페이드 여유
-    key = track_key(settings["caption"], settings["seed"])
+    key = track_key(settings["caption"], settings["seed"], music.engine(config))
     if (settings["file"] and settings["key"] == key and Path(settings["file"]).exists()
             and settings["seconds"] >= seconds - 1.0):  # 버전이 조금 길어져도 끝 페이드 여유 안이면 같은 곡
         out = Path(settings["file"])
@@ -185,4 +200,12 @@ def describe(settings):
     s = normalize(settings)
     if not s["enabled"]:
         return ""
+    if s["uploaded"]:
+        return f"배경음악 {round(s['volume'] * 100)}% (올린 곡)"
     return f"배경음악 {round(s['volume'] * 100)}%" + ("" if s["file"] else " (만들 예정)")
+
+
+def is_generated(settings):
+    """AI로 만든 곡인지 (라이선스 표기 대상). 사용자가 올린 곡이면 False."""
+    s = normalize(settings)
+    return bool(s["enabled"] and s["file"] and not s["uploaded"])

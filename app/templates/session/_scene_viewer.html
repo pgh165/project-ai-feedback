@@ -4,7 +4,7 @@
 {% import "_ui.html" as ui %}
 {% set image_mode = viewer_mode == 'images' %}
 {% set can_regen = is_current and round.status in ('images_ready', 'clips_ready', 'video_ready') %}
-{% set can_comment = is_current and round.status in ('uploaded', 'feedback_collected') %}
+{% set can_comment = is_current and round.status in ('uploaded', 'feedback_collected', 'feedback_classified', 'pending_review') %}
 <section class="scene-section {{ 'is-main' if viewer_mode != 'after' }} {{ 'is-wide' if session.aspect_ratio == '16:9' }}" aria-labelledby="scene-title"
          data-regen-url="{{ url_for('session.images_regenerate' if image_mode else 'session.clips_regenerate', round_id=round.id) }}"
          data-notes-url="{{ url_for('session.shot_note_delete', round_id=round.id) }}">
@@ -107,6 +107,8 @@
       {% endif %}
     </div>
     {% if can_regen and sc.image %}
+    {# 데모 앱에서는 '움직임 지정'·'참조 영상으로 움직임 따라 하기'를 숨긴다 — 움직임은 AI가 정한다(자동 움직임 경로), 시연에 필요 없음 (2026-11-07 사용자) #}
+    {% if not config.DEMO_MODE %}
     {% set motion_stale = sc.motion and sc.motion.image != sc.image.image_path %}
     <details class="motion-panel" data-url="{{ url_for('session.shot_motion', round_id=round.id, shot_id=sc.id) }}"
              data-image-step="{{ '1' if image_mode else '0' }}" data-motion="{{ sc.motion|tojson|forceescape }}">
@@ -140,11 +142,54 @@
         </div>
       </div>
     </details>
+    {# 참조 영상으로 움직임 따라 하기 (유니언 컨트롤): 영상의 동작·구도를 그대로, 겉모습은 장면 묘사대로 #}
+    <details class="motion-panel reference-panel">
+      <summary>참조 영상으로 움직임 따라 하기{% if sc.reference %} <span class="motion-badge">참조 영상 적용 중 — {{ sc.reference.name }}</span>{% endif %}</summary>
+      <form class="reference-form" data-url="{{ url_for('session.shot_reference', round_id=round.id, shot_id=sc.id) }}">
+        <p class="hint-inline mb-2">휴대폰으로 찍은 영상이나 마음에 드는 다른 컷을 올리면, 그 영상의 동작과 구도를 그대로 따라 하고
+          겉모습은 이 장면 묘사대로 만듭니다. {{ ui.tip('영상의 윤곽선만 따르므로 모양이 조금 달라질 수 있습니다(예: 집게가 손가락처럼). 장면 길이만큼 앞부분을 쓰고, 짧으면 마지막 화면을 늘입니다.') }}</p>
+        <input class="form-control form-control-sm mb-2" type="file" name="video" accept=".mp4,.mov,.webm,.mkv,.m4v">
+        <label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="first_frame" value="1"
+          {{ 'checked' if sc.reference and sc.reference.first_frame }}> 첫 프레임 이미지에서 시작
+          {{ ui.tip('참조 영상의 첫 장면과 첫 프레임 이미지의 구도가 같을 때만 켜세요. 다르면 둘이 충돌해 화면이 뭉개집니다.') }}</label>
+        <p class="motion-message" role="alert"></p>
+        <div class="motion-actions">
+          <button type="submit" class="btn btn-primary btn-sm">{{ '참조 영상 저장' if image_mode else '참조 영상대로 컷 만들기' }}</button>
+          {% if sc.reference %}<button type="button" class="btn btn-outline-danger btn-sm reference-clear">참조 영상 떼기</button>{% endif %}
+        </div>
+      </form>
+    </details>
+    {% endif %}{# not DEMO_MODE #}
     {% endif %}
   </article>
   {% endfor %}
 </section>
 <script src="{{ url_for('static', filename='js/motion_editor.js') }}" defer></script>
+<script>
+// 참조 영상 올리기·떼기 → 저장되면(또는 컷을 만들기 시작하면) 새로 고침
+document.querySelectorAll('.reference-form').forEach(function (form) {
+  var msg = form.querySelector('.motion-message');
+  async function send(data) {
+    msg.textContent = '보내는 중…';
+    var res = await fetch(form.dataset.url, {method: 'POST', body: data});
+    var json = {};
+    try { json = await res.json(); } catch (e) { /* 본문 없음 */ }
+    if (!res.ok) { msg.textContent = json.error || '저장하지 못했습니다.'; return; }
+    msg.textContent = json.changed ? (json.regenerating ? '이 장면의 컷을 다시 만들기 시작했습니다.' : '저장했습니다.') : '바뀐 것이 없습니다.';
+    setTimeout(function () { location.reload(); }, 600);
+  }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!form.video.files.length) { msg.textContent = '참조 영상 파일을 골라 주세요.'; return; }
+    send(new FormData(form));
+  });
+  var clear = form.querySelector('.reference-clear');
+  if (clear) clear.addEventListener('click', function () {
+    if (!confirm('참조 영상을 떼고 원래대로 만들까요?')) return;
+    var data = new FormData(); data.append('clear', '1'); send(data);
+  });
+});
+</script>
 <script>
 (function () {
   var sec = document.querySelector('.scene-section');

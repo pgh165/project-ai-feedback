@@ -29,7 +29,9 @@
       {% if config.get('DEV_TEST_PAGE', True) %}
       <a class="topnav-link topnav-dev {{ 'is-active' if ep.startswith('devtest') }}" href="{{ url_for('devtest.page') }}">개발용 점검</a>
       {% endif %}
+      {% if not config.get('DEMO_MODE') %}{# 데모 앱(run_demo.py)에서는 숨김 — 촬영 화면을 단순하게 #}
       <a class="topnav-link topnav-dup {{ 'is-active' if ep in ('session.home', 'session.create') }}" href="{{ url_for('session.home') }}">새 영상</a>
+      {% endif %}
       <a class="topnav-link topnav-dup {{ 'is-active' if ep == 'session.index' }}" href="{{ url_for('session.index') }}">내 프로젝트</a>
     </nav>
   </div>
