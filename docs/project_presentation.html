@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI 영상 피드백 자동 개선 시스템</title>
+<title>사용자 입력 기반 AI 영상 생성 및 시청자 피드백 자동 개선 시스템</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -76,9 +76,9 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
 ═══════════════════════════════════════════ */
 #s-topic{display:grid;grid-template-columns:700px 640px;grid-template-rows:auto auto;column-gap:40px;align-content:center;padding-top:40px;}
 .eyebrow{font:600 17px var(--f);color:var(--muted);margin-bottom:26px;}
-.h1{font:800 100px/1.05 var(--f);letter-spacing:-0.045em;}
+.h1{font:800 54px/1.25 var(--f);letter-spacing:-0.035em;}
 .h1 span{display:block;}
-.h1 .g{background:linear-gradient(90deg,var(--blue),var(--violet) 75%);-webkit-background-clip:text;background-clip:text;color:transparent;padding-right:.08em;}
+.h1 .g{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--violet) 75%);-webkit-background-clip:text;background-clip:text;color:transparent;padding-right:.08em;}
 .sub{font-size:23px;color:var(--muted);margin-top:28px;line-height:1.6;}
 .sub b{color:var(--ink);}
 .art{width:640px;height:400px;align-self:center;overflow:visible;}
@@ -275,8 +275,8 @@ h2 em{font-style:normal;background:linear-gradient(90deg,var(--blue),var(--viole
 <!-- ════════ 01 표지 ════════ -->
 <section class="slide" id="s-topic" data-name="주제">
   <div>
-    <p class="eyebrow" data-b="0">국립군산대학교 임베디드소프트웨어학과</p>
-    <h1 class="h1"><span data-b="0" style="--d:.1s">AI 영상 피드백</span><span class="g" data-b="0" style="--d:.25s">자동 개선 시스템</span></h1>
+    <p class="eyebrow" data-b="0">2026 졸업작품</p>
+    <h1 class="h1"><span data-b="0" style="--d:.1s">사용자 입력 기반 <em class="g">AI 영상 생성</em> 및</span><span data-b="0" style="--d:.25s">시청자 피드백 <em class="g">자동 개선</em> 시스템</span></h1>
     <p class="sub" data-b="0" style="--d:.45s">만들고 싶은 영상을 한두 문장으로 적으면 로컬 AI가 영상을 만들고,<br>시청자 댓글을 보고 <b>스스로 더 나은 버전을 만듭니다.</b><br>작업은 AI가, 사람은 <b>두 번 결정</b>만 합니다.</p>
   </div>
   <!-- 그림 (글자 없음): 편집기 창 안에서 한 바퀴 — AI가 장면을 그려 영상 완성 → 업로드 → 댓글이 들어옴 → 잡담은 떨어지고
