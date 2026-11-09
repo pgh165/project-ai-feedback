@@ -338,7 +338,7 @@ project_ai_feedback/
 │                              (ltx25_t2v · ltx25_i2v · ltx25_flf2v · ltx25_motion · ltx25_union · zimage_t2i · qwen_face_t2i)
 ├─ instance/                   pipeline.db, 영상·로고·토큰 (git 제외)
 ├─ instance_demo/              데모 앱 전용 작업 폴더 (git 제외)
-├─ docs/                       feedback_loop.html (피드백 루프 설명 그림), project_intro.html (프로젝트 소개 한 장)
+├─ docs/                       feedback_loop.html (피드백 루프 설명 그림), project_presentation.html (발표 자료, 시연 영상 링크)
 ├─ _archive/                   쓰지 않는 예전 파일 보관 (git 제외, 지워도 동작에 영향 없음)
 ├─ config.py                   모든 설정 (.env 우선)
 ├─ run.py                      앱 실행
